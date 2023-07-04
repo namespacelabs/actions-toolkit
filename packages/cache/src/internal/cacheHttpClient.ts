@@ -36,7 +36,7 @@ import {
 const versionSalt = '1.0'
 
 function getCacheApiUrl(resource: string): string {
-  const baseUrl: string = process.env['ACTIONS_CACHE_URL'] || ''
+  const baseUrl: string = process.env['NAMESPACE_CACHE_URL'] || 'https://cache.namespace.so/'
   if (!baseUrl) {
     throw new Error('Cache Service Url not found, unable to restore cache.')
   }
@@ -227,8 +227,9 @@ async function uploadChunk(
   resourceUrl: string,
   openStream: () => NodeJS.ReadableStream,
   start: number,
-  end: number
-): Promise<void> {
+  end: number,
+  chunkNo: number
+): Promise<string> {
   core.debug(
     `Uploading chunk of size ${end -
       start +
@@ -239,7 +240,8 @@ async function uploadChunk(
   )
   const additionalHeaders = {
     'Content-Type': 'application/octet-stream',
-    'Content-Range': getContentRange(start, end)
+    'Content-Range': getContentRange(start, end),
+    'NS-Chunk-No': chunkNo.toString(),
   }
 
   const uploadChunkResponse = await retryHttpClientResponse(
@@ -258,14 +260,20 @@ async function uploadChunk(
       `Cache service responded with ${uploadChunkResponse.message.statusCode} during upload chunk.`
     )
   }
+  if (uploadChunkResponse.message.headers.etag == null) {
+    throw new Error(
+      `Cache service response misses ETag during upload chunk.`
+    )
+  }
+  return uploadChunkResponse.message.headers.etag;
 }
 
 async function uploadFile(
   httpClient: HttpClient,
-  cacheId: number,
+  cacheId: string,
   archivePath: string,
   options?: UploadOptions
-): Promise<void> {
+): Promise<string[]> {
   // Upload Chunks
   const fileSize = utils.getArchiveFileSizeInBytes(archivePath)
   const resourceUrl = getCacheApiUrl(`caches/${cacheId.toString()}`)
@@ -283,7 +291,8 @@ async function uploadFile(
 
   const parallelUploads = [...new Array(concurrency).keys()]
   core.debug('Awaiting all uploads')
-  let offset = 0
+  let offset = 0, nextChunk = 0
+  const etags: string[] = []
 
   try {
     await Promise.all(
@@ -292,9 +301,11 @@ async function uploadFile(
           const chunkSize = Math.min(fileSize - offset, maxChunkSize)
           const start = offset
           const end = offset + chunkSize - 1
+          const chunkNo = nextChunk
           offset += maxChunkSize
+          nextChunk += 1
 
-          await uploadChunk(
+          const etag = await uploadChunk(
             httpClient,
             resourceUrl,
             () =>
@@ -311,23 +322,26 @@ async function uploadFile(
                   )
                 }),
             start,
-            end
+            end,
+            chunkNo
           )
+          etags[chunkNo] = etag
         }
       })
     )
   } finally {
     fs.closeSync(fd)
   }
-  return
+  return etags
 }
 
 async function commitCache(
   httpClient: HttpClient,
-  cacheId: number,
-  filesize: number
+  cacheId: string,
+  filesize: number,
+  etags: string[],
 ): Promise<TypedResponse<null>> {
-  const commitCacheRequest: CommitCacheRequest = {size: filesize}
+  const commitCacheRequest: CommitCacheRequest = {size: filesize, etags }
   return await retryTypedResponse('commitCache', async () =>
     httpClient.postJson<null>(
       getCacheApiUrl(`caches/${cacheId.toString()}`),
@@ -337,14 +351,14 @@ async function commitCache(
 }
 
 export async function saveCache(
-  cacheId: number,
+  cacheId: string,
   archivePath: string,
   options?: UploadOptions
 ): Promise<void> {
   const httpClient = createHttpClient()
 
   core.debug('Upload cache')
-  await uploadFile(httpClient, cacheId, archivePath, options)
+  const etags = await uploadFile(httpClient, cacheId, archivePath, options)
 
   // Commit Cache
   core.debug('Commiting cache')
@@ -353,7 +367,7 @@ export async function saveCache(
     `Cache Size: ~${Math.round(cacheSize / (1024 * 1024))} MB (${cacheSize} B)`
   )
 
-  const commitCacheResponse = await commitCache(httpClient, cacheId, cacheSize)
+  const commitCacheResponse = await commitCache(httpClient, cacheId, cacheSize, etags)
   if (!isSuccessStatusCode(commitCacheResponse.statusCode)) {
     throw new Error(
       `Cache service responded with ${commitCacheResponse.statusCode} during commit cache.`

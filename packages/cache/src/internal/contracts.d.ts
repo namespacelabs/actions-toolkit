@@ -20,7 +20,8 @@ export interface ArtifactCacheList {
 }
 
 export interface CommitCacheRequest {
-  size: number
+  size: number;
+  etags: string[];
 }
 
 export interface ReserveCacheRequest {
@@ -30,7 +31,7 @@ export interface ReserveCacheRequest {
 }
 
 export interface ReserveCacheResponse {
-  cacheId: number
+  cacheId: string
 }
 
 export interface InternalCacheOptions {

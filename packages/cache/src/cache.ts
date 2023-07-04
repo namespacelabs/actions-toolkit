@@ -167,12 +167,12 @@ export async function saveCache(
   key: string,
   options?: UploadOptions,
   enableCrossOsArchive = false
-): Promise<number> {
+): Promise<void> {
   checkPaths(paths)
   checkKey(key)
 
   const compressionMethod = await utils.getCompressionMethod()
-  let cacheId = -1
+  let cacheId = ""
 
   const cachePaths = await utils.resolvePaths(paths)
   core.debug('Cache Paths:')
@@ -255,6 +255,4 @@ export async function saveCache(
       core.debug(`Failed to delete archive: ${error}`)
     }
   }
-
-  return cacheId
 }
