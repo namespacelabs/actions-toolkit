@@ -61,7 +61,13 @@ function getRequestOptions(): RequestOptions {
 }
 
 function createHttpClient(): HttpClient {
-  const token = process.env['ACTIONS_RUNTIME_TOKEN'] || ''
+  if (process.env['NSC_TOKEN_FILE'] == null) {
+    throw new Error(`Missing $NSC_TOKEN_FILE`)
+  }
+
+  const tokenJSON = fs.readFileSync(process.env['NSC_TOKEN_FILE'], "utf8")
+  const token = JSON.parse(tokenJSON).bearer_token
+
   const bearerCredentialHandler = new BearerCredentialHandler(token)
 
   return new HttpClient(
