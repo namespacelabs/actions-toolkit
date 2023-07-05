@@ -37,7 +37,7 @@ const versionSalt = '1.0'
 function getCacheApiUrl(resource: string): string {
   const baseUrl: string =
     process.env['NAMESPACE_CACHE_URL'] ||
-    'https://cache.github-services.staging-fra1.nscluster.cloud/'
+    'https://cache.github-services.fra1.nscluster.cloud/'
   if (!baseUrl) {
     throw new Error('Cache Service Url not found, unable to restore cache.')
   }
