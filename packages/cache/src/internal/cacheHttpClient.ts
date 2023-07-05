@@ -261,6 +261,9 @@ async function uploadChunk(
         additionalHeaders
       )
   )
+  // Avoid leaking the response handle.
+  // Otherwise this connection keeps the process hanging after completion.
+  await uploadChunkResponse.readBody()
 
   if (!isSuccessStatusCode(uploadChunkResponse.message.statusCode)) {
     throw new Error(
