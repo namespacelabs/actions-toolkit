@@ -7,7 +7,6 @@ import * as stream from 'stream/promises'
 
 import * as utils from './cacheUtils'
 import {SocketTimeout} from './constants'
-import {DownloadOptions} from '../options'
 import {retryHttpClientResponse} from './requestUtils'
 
 /**
@@ -19,15 +18,18 @@ import {retryHttpClientResponse} from './requestUtils'
 async function pipeResponseToStream(
   response: HttpClientResponse,
   output: NodeJS.WritableStream,
-  progress: DownloadProgress,
+  progress: DownloadProgress
 ): Promise<void> {
-  await stream.pipeline(response.message, 
-    async function* (source: AsyncIterable<buffer.Buffer>) {
+  await stream.pipeline(
+    response.message,
+    async function*(source: AsyncIterable<buffer.Buffer>) {
       for await (const chunk of source) {
         progress.addReceivedBytes(chunk.byteLength)
         yield chunk
       }
-    }, output)
+    },
+    output
+  )
 }
 
 /**
@@ -154,9 +156,11 @@ export async function downloadCacheHttpClient(
     core.debug(`Aborting download, socket timed out after ${SocketTimeout} ms`)
   })
 
-  const contentLength = Number(downloadResponse.message.headers['content-length'])
+  const contentLength = Number(
+    downloadResponse.message.headers['content-length']
+  )
   if (!contentLength) {
-    throw new Error(`Missing Content-Length header on response`);
+    throw new Error(`Missing Content-Length header on response`)
   }
   const downloadProgress = new DownloadProgress(contentLength)
   downloadProgress.startDisplayTimer()
@@ -181,33 +185,37 @@ export async function downloadCacheConcurrent(
   concurrency: number
 ): Promise<void> {
   const fd = await fsPromises.open(archivePath, 'w')
-  await fd.truncate(archiveSize);
+  await fd.truncate(archiveSize)
 
   const httpClient = new HttpClient('actions/cache')
   const downloadProgress = new DownloadProgress(archiveSize)
 
-  const chunkSize = Math.ceil(archiveSize/concurrency);
-  const results = [];
+  const chunkSize = Math.ceil(archiveSize / concurrency)
+  const results = []
   for (let offset = 0; offset < archiveSize; offset += chunkSize) {
-    const limit = Math.min(offset+chunkSize, archiveSize)-1 // inclusive range
+    const limit = Math.min(offset + chunkSize, archiveSize) - 1 // inclusive range
     core.debug(`Downloading chunk bytes=${offset}-${limit}`)
-    results.push((async () => {
-      const downloadResponse = await retryHttpClientResponse(
-        'downloadCache',
-        async () => httpClient.get(archiveLocation, {
-          Range: `bytes=${offset}-${limit}`
-        }))
+    results.push(
+      (async () => {
+        const downloadResponse = await retryHttpClientResponse(
+          'downloadCache',
+          async () =>
+            httpClient.get(archiveLocation, {
+              Range: `bytes=${offset}-${limit}`
+            })
+        )
 
-      const w = fd.createWriteStream({ autoClose: false, start: offset })
-      await pipeResponseToStream(downloadResponse, w, downloadProgress)
-    })())
+        const w = fd.createWriteStream({autoClose: false, start: offset})
+        await pipeResponseToStream(downloadResponse, w, downloadProgress)
+      })()
+    )
   }
 
   downloadProgress.startDisplayTimer()
   try {
-    await Promise.all(results);
+    await Promise.all(results)
   } finally {
     downloadProgress.stopDisplayTimer()
-    fd.close();
+    fd.close()
   }
 }

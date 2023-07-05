@@ -7,7 +7,6 @@ import {
 } from '@actions/http-client/lib/interfaces'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
-import {URL} from 'url'
 
 import * as utils from './cacheUtils'
 import {CompressionMethod} from './constants'
@@ -36,7 +35,9 @@ import {
 const versionSalt = '1.0'
 
 function getCacheApiUrl(resource: string): string {
-  const baseUrl: string = process.env['NAMESPACE_CACHE_URL'] || 'https://cache.github-services.staging-fra1.nscluster.cloud/'
+  const baseUrl: string =
+    process.env['NAMESPACE_CACHE_URL'] ||
+    'https://cache.github-services.staging-fra1.nscluster.cloud/'
   if (!baseUrl) {
     throw new Error('Cache Service Url not found, unable to restore cache.')
   }
@@ -65,7 +66,7 @@ function createHttpClient(): HttpClient {
     throw new Error(`Missing $NSC_TOKEN_FILE`)
   }
 
-  const tokenJSON = fs.readFileSync(process.env['NSC_TOKEN_FILE'], "utf8")
+  const tokenJSON = fs.readFileSync(process.env['NSC_TOKEN_FILE'], 'utf8')
   const token = JSON.parse(tokenJSON).bearer_token
 
   const bearerCredentialHandler = new BearerCredentialHandler(token)
@@ -181,7 +182,12 @@ export async function downloadCache(
   const downloadOptions = getDownloadOptions(options)
 
   if (downloadOptions.downloadConcurrency! > 1) {
-    await downloadCacheConcurrent(archiveLocation, archivePath, archiveSize, downloadOptions.downloadConcurrency!)
+    await downloadCacheConcurrent(
+      archiveLocation,
+      archivePath,
+      archiveSize,
+      downloadOptions.downloadConcurrency!
+    )
   } else {
     // Otherwise, download using the Actions http-client.
     await downloadCacheHttpClient(archiveLocation, archivePath)
@@ -230,7 +236,8 @@ async function uploadChunk(
   openStream: () => NodeJS.ReadableStream,
   start: number,
   end: number,
-  chunkNo: number
+  chunkNo: number,
+  signal: AbortSignal
 ): Promise<string> {
   core.debug(
     `Uploading chunk of size ${end -
@@ -242,9 +249,9 @@ async function uploadChunk(
   )
   const additionalHeaders = {
     'Content-Type': 'application/octet-stream',
-    'Content-Length': end-start+1, // end is inclusive
+    'Content-Length': end - start + 1, // end is inclusive
     'Content-Range': getContentRange(start, end),
-    'NS-Chunk-No': chunkNo.toString(),
+    'NS-Chunk-No': chunkNo.toString()
   }
 
   const uploadChunkResponse = await retryHttpClientResponse(
@@ -255,7 +262,8 @@ async function uploadChunk(
         resourceUrl,
         openStream(),
         additionalHeaders
-      )
+      ),
+    {signal}
   )
   // Avoid leaking the response handle.
   // Otherwise this connection keeps the process hanging after completion.
@@ -267,11 +275,9 @@ async function uploadChunk(
     )
   }
   if (uploadChunkResponse.message.headers.etag == null) {
-    throw new Error(
-      `Cache service response misses ETag during upload chunk.`
-    )
+    throw new Error(`Cache service response misses ETag during upload chunk.`)
   }
-  return uploadChunkResponse.message.headers.etag;
+  return uploadChunkResponse.message.headers.etag
 }
 
 async function uploadFile(
@@ -295,48 +301,174 @@ async function uploadFile(
     uploadOptions.uploadChunkSize
   )
 
+  const abort = new AbortController()
   const parallelUploads = [...new Array(concurrency).keys()]
   core.debug('Awaiting all uploads')
-  let offset = 0, nextChunk = 0
+  let offset = 0,
+    nextChunk = 0
   const etags: string[] = []
 
-  try {
-    await Promise.all(
-      parallelUploads.map(async () => {
-        while (offset < fileSize) {
-          const chunkSize = Math.min(fileSize - offset, maxChunkSize)
-          const start = offset
-          const end = offset + chunkSize - 1
-          const chunkNo = nextChunk
-          offset += maxChunkSize
-          nextChunk += 1
+  const uploads = parallelUploads.map(async () => {
+    while (offset < fileSize) {
+      const chunkSize = Math.min(fileSize - offset, maxChunkSize)
+      const start = offset
+      const end = offset + chunkSize - 1
+      const chunkNo = nextChunk
+      offset += maxChunkSize
+      nextChunk += 1
 
-          const etag = await uploadChunk(
-            httpClient,
-            resourceUrl,
-            () =>
-              fs
-                .createReadStream(archivePath, {
-                  fd,
-                  start,
-                  end,
-                  autoClose: false
-                })
-                .on('error', error => {
-                  throw new Error(
-                    `Cache upload failed because file read failed with ${error.message}`
-                  )
-                }),
-            start,
-            end,
-            chunkNo
-          )
-          etags[chunkNo] = etag
-        }
-      })
-    )
-  } finally {
+      const etag = await uploadChunk(
+        httpClient,
+        resourceUrl,
+        () =>
+          fs
+            .createReadStream(archivePath, {
+              fd,
+              start,
+              end,
+              autoClose: false
+            })
+            .on('error', error => {
+              throw new Error(
+                `Cache upload failed because file read failed with ${error.message}`
+              )
+            }),
+        start,
+        end,
+        chunkNo,
+        abort.signal
+      )
+      etags[chunkNo] = etag
+    }
+  })
+
+  // Only close fd once HTTP communication finishes.
+  // Closing the file confuses httpClient (it doesn't abort the requests and they hang).
+  Promise.allSettled(uploads).then(() => {
     fs.closeSync(fd)
+  })
+
+  try {
+    await Promise.all(uploads)
+  } finally {
+    abort.abort()
+  }
+  return etags
+}
+
+async function uploadChunkToUrl(
+  httpClient: HttpClient,
+  resourceUrl: string,
+  chunkNo: number,
+  length: number,
+  openStream: () => NodeJS.ReadableStream,
+  signal: AbortSignal
+): Promise<string> {
+  const additionalHeaders = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': length
+  }
+
+  const uploadChunkResponse = await retryHttpClientResponse(
+    `uploadChunk #${chunkNo}`,
+    async () =>
+      httpClient.sendStream(
+        'PUT',
+        resourceUrl,
+        openStream(),
+        additionalHeaders
+      ),
+    {signal}
+  )
+  // Avoid leaking the response handle.
+  // Otherwise this connection keeps the process hanging after completion.
+  await uploadChunkResponse.readBody()
+
+  if (!isSuccessStatusCode(uploadChunkResponse.message.statusCode)) {
+    throw new Error(
+      `Cache service responded with ${uploadChunkResponse.message.statusCode} during upload chunk.`
+    )
+  }
+  if (uploadChunkResponse.message.headers.etag == null) {
+    throw new Error(`Cache service response misses ETag during upload chunk.`)
+  }
+  return uploadChunkResponse.message.headers.etag
+}
+
+async function uploadFileToUrls(
+  uploadUrls: string[],
+  archivePath: string,
+  options?: UploadOptions
+): Promise<string[]> {
+  const httpClient = new HttpClient('actions/cache')
+  const uploadOptions = getUploadOptions(options)
+  const concurrency = utils.assertDefined(
+    'uploadConcurrency',
+    uploadOptions.uploadConcurrency
+  )
+  const preferredChunkSize = utils.assertDefined(
+    'uploadChunkSize',
+    uploadOptions.uploadChunkSize
+  )
+
+  const fileSize = utils.getArchiveFileSizeInBytes(archivePath)
+  const fd = fs.openSync(archivePath, 'r')
+
+  const parallelUploads = [...new Array(concurrency).keys()]
+  core.debug('Awaiting all uploads')
+  const maxChunkSize = Math.max(
+    preferredChunkSize,
+    Math.ceil(fileSize / uploadUrls.length)
+  )
+
+  const abort = new AbortController()
+  let offset = 0,
+    nextChunk = 0
+  const etags: string[] = []
+  const uploads = parallelUploads.map(async () => {
+    while (offset < fileSize) {
+      const chunkNo = nextChunk
+      const chunkUrl = uploadUrls[chunkNo]
+      const chunkSize = Math.min(fileSize - offset, maxChunkSize)
+      const start = offset
+      const end = offset + chunkSize - 1
+      offset += maxChunkSize
+      nextChunk += 1
+
+      core.debug(`Uploading chunk ${chunkNo} (${start}-${end}) to ${chunkUrl}`)
+
+      const etag = await uploadChunkToUrl(
+        httpClient,
+        chunkUrl,
+        chunkNo,
+        chunkSize,
+        () =>
+          fs
+            .createReadStream(archivePath, {
+              fd,
+              start,
+              end,
+              autoClose: false
+            })
+            .on('error', error => {
+              throw new Error(
+                `Cache upload failed because file read failed with ${error.message} ${error}`
+              )
+            }),
+        abort.signal
+      )
+      etags[chunkNo] = etag
+    }
+  })
+
+  Promise.allSettled(uploads).then(() => {
+    fs.closeSync(fd)
+  })
+  try {
+    await Promise.all(uploads)
+  } finally {
+    // Store retrying. HTTP client is not abortable.
+    abort.abort()
   }
   return etags
 }
@@ -345,9 +477,9 @@ async function commitCache(
   httpClient: HttpClient,
   cacheId: string,
   filesize: number,
-  etags: string[],
+  etags: string[]
 ): Promise<TypedResponse<null>> {
-  const commitCacheRequest: CommitCacheRequest = {size: filesize, etags }
+  const commitCacheRequest: CommitCacheRequest = {size: filesize, etags}
   return await retryTypedResponse('commitCache', async () =>
     httpClient.postJson<null>(
       getCacheApiUrl(`caches/${cacheId.toString()}`),
@@ -359,12 +491,15 @@ async function commitCache(
 export async function saveCache(
   cacheId: string,
   archivePath: string,
+  uploadUrls?: string[],
   options?: UploadOptions
 ): Promise<void> {
   const httpClient = createHttpClient()
 
   core.debug('Upload cache')
-  const etags = await uploadFile(httpClient, cacheId, archivePath, options)
+  const etags = uploadUrls?.length
+    ? await uploadFileToUrls(uploadUrls, archivePath, options)
+    : await uploadFile(httpClient, cacheId, archivePath, options)
 
   // Commit Cache
   core.debug('Commiting cache')
@@ -373,7 +508,12 @@ export async function saveCache(
     `Cache Size: ~${Math.round(cacheSize / (1024 * 1024))} MB (${cacheSize} B)`
   )
 
-  const commitCacheResponse = await commitCache(httpClient, cacheId, cacheSize, etags)
+  const commitCacheResponse = await commitCache(
+    httpClient,
+    cacheId,
+    cacheSize,
+    etags
+  )
   if (!isSuccessStatusCode(commitCacheResponse.statusCode)) {
     throw new Error(
       `Cache service responded with ${commitCacheResponse.statusCode} during commit cache.`

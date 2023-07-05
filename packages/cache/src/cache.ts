@@ -98,7 +98,9 @@ export async function restoreCache(
     })
     if (!cacheEntry?.archiveLocation || !cacheEntry?.size) {
       // Cache not found
-      throw new Error(`Missing archiveLocation or size in ${JSON.stringify(cacheEntry)}`);
+      throw new Error(
+        `Missing archiveLocation or size in ${JSON.stringify(cacheEntry)}`
+      )
     }
 
     if (options?.lookupOnly) {
@@ -174,7 +176,7 @@ export async function saveCache(
   checkKey(key)
 
   const compressionMethod = await utils.getCompressionMethod()
-  let cacheId = ""
+  let cacheId = ''
 
   const cachePaths = await utils.resolvePaths(paths)
   core.debug('Cache Paths:')
@@ -229,7 +231,12 @@ export async function saveCache(
     }
 
     core.debug(`Saving Cache (ID: ${cacheId})`)
-    await cacheHttpClient.saveCache(cacheId, archivePath, options)
+    await cacheHttpClient.saveCache(
+      cacheId,
+      archivePath,
+      reserveCacheResponse.result.uploadUrls,
+      options
+    )
   } catch (error) {
     const typedError = error as Error
     if (typedError.name === ValidationError.name) {

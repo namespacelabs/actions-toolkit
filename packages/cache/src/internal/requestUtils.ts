@@ -6,6 +6,7 @@ import {
 } from '@actions/http-client'
 import {DefaultRetryDelay, DefaultRetryAttempts} from './constants'
 import {ITypedResponseWithError} from './contracts'
+import {setTimeout} from 'timers/promises'
 
 export function isSuccessStatusCode(statusCode?: number): boolean {
   if (!statusCode) {
@@ -33,22 +34,19 @@ export function isRetryableStatusCode(statusCode?: number): boolean {
   return retryableStatusCodes.includes(statusCode)
 }
 
-async function sleep(milliseconds: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, milliseconds))
-}
-
 export async function retry<T>(
   name: string,
   method: () => Promise<T>,
   getStatusCode: (arg0: T) => number | undefined,
   maxAttempts = DefaultRetryAttempts,
   delay = DefaultRetryDelay,
-  onError: ((arg0: Error) => T | undefined) | undefined = undefined
+  onError: ((arg0: Error) => T | undefined) | undefined = undefined,
+  signal?: AbortSignal
 ): Promise<T> {
   let errorMessage = ''
   let attempt = 1
 
-  while (attempt <= maxAttempts) {
+  while (attempt <= maxAttempts && !signal?.aborted) {
     let response: T | undefined = undefined
     let statusCode: number | undefined = undefined
     let isRetryable = false
@@ -86,7 +84,7 @@ export async function retry<T>(
       break
     }
 
-    await sleep(delay)
+    await setTimeout(delay, null, {signal})
     attempt++
   }
 
@@ -96,8 +94,11 @@ export async function retry<T>(
 export async function retryTypedResponse<T>(
   name: string,
   method: () => Promise<ITypedResponseWithError<T>>,
-  maxAttempts = DefaultRetryAttempts,
-  delay = DefaultRetryDelay
+  {
+    maxAttempts = DefaultRetryAttempts,
+    delay = DefaultRetryDelay,
+    signal = undefined as AbortSignal | undefined
+  } = {}
 ): Promise<ITypedResponseWithError<T>> {
   return await retry(
     name,
@@ -118,21 +119,27 @@ export async function retryTypedResponse<T>(
       } else {
         return undefined
       }
-    }
+    },
+    signal
   )
 }
 
 export async function retryHttpClientResponse(
   name: string,
   method: () => Promise<HttpClientResponse>,
-  maxAttempts = DefaultRetryAttempts,
-  delay = DefaultRetryDelay
+  {
+    maxAttempts = DefaultRetryAttempts,
+    delay = DefaultRetryDelay,
+    signal = undefined as AbortSignal | undefined
+  } = {}
 ): Promise<HttpClientResponse> {
   return await retry(
     name,
     method,
     (response: HttpClientResponse) => response.message.statusCode,
     maxAttempts,
-    delay
+    delay,
+    undefined,
+    signal
   )
 }
