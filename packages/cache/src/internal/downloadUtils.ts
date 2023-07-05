@@ -1,18 +1,14 @@
 import * as core from '@actions/core'
 import {HttpClient, HttpClientResponse} from '@actions/http-client'
-import {BlockBlobClient} from '@azure/storage-blob'
-import {TransferProgressEvent} from '@azure/ms-rest-js'
 import * as buffer from 'buffer'
 import * as fs from 'fs'
-import * as stream from 'stream'
-import * as util from 'util'
+import * as fsPromises from 'fs/promises'
+import * as stream from 'stream/promises'
 
 import * as utils from './cacheUtils'
 import {SocketTimeout} from './constants'
 import {DownloadOptions} from '../options'
 import {retryHttpClientResponse} from './requestUtils'
-
-import {AbortController} from '@azure/abort-controller'
 
 /**
  * Pipes the body of a HTTP response to a stream
@@ -22,10 +18,16 @@ import {AbortController} from '@azure/abort-controller'
  */
 async function pipeResponseToStream(
   response: HttpClientResponse,
-  output: NodeJS.WritableStream
+  output: NodeJS.WritableStream,
+  progress: DownloadProgress,
 ): Promise<void> {
-  const pipeline = util.promisify(stream.pipeline)
-  await pipeline(response.message, output)
+  await stream.pipeline(response.message, 
+    async function* (source: AsyncIterable<buffer.Buffer>) {
+      for await (const chunk of source) {
+        progress.addReceivedBytes(chunk.byteLength)
+        yield chunk
+      }
+    }, output)
 }
 
 /**
@@ -33,9 +35,6 @@ async function pipeResponseToStream(
  */
 export class DownloadProgress {
   contentLength: number
-  segmentIndex: number
-  segmentSize: number
-  segmentOffset: number
   receivedBytes: number
   startTime: number
   displayedComplete: boolean
@@ -43,45 +42,25 @@ export class DownloadProgress {
 
   constructor(contentLength: number) {
     this.contentLength = contentLength
-    this.segmentIndex = 0
-    this.segmentSize = 0
-    this.segmentOffset = 0
     this.receivedBytes = 0
     this.displayedComplete = false
     this.startTime = Date.now()
   }
 
   /**
-   * Progress to the next segment. Only call this method when the previous segment
-   * is complete.
-   *
-   * @param segmentSize the length of the next segment
-   */
-  nextSegment(segmentSize: number): void {
-    this.segmentOffset = this.segmentOffset + this.segmentSize
-    this.segmentIndex = this.segmentIndex + 1
-    this.segmentSize = segmentSize
-    this.receivedBytes = 0
-
-    core.debug(
-      `Downloading segment at offset ${this.segmentOffset} with length ${this.segmentSize}...`
-    )
-  }
-
-  /**
-   * Sets the number of bytes received for the current segment.
+   * Adds the number of bytes received.
    *
    * @param receivedBytes the number of bytes received
    */
-  setReceivedBytes(receivedBytes: number): void {
-    this.receivedBytes = receivedBytes
+  addReceivedBytes(receivedBytes: number): void {
+    this.receivedBytes += receivedBytes
   }
 
   /**
    * Returns the total number of bytes transferred.
    */
   getTransferredBytes(): number {
-    return this.segmentOffset + this.receivedBytes
+    return this.receivedBytes
   }
 
   /**
@@ -100,7 +79,7 @@ export class DownloadProgress {
       return
     }
 
-    const transferredBytes = this.segmentOffset + this.receivedBytes
+    const transferredBytes = this.receivedBytes
     const percentage = (100 * (transferredBytes / this.contentLength)).toFixed(
       1
     )
@@ -117,15 +96,6 @@ export class DownloadProgress {
 
     if (this.isDone()) {
       this.displayedComplete = true
-    }
-  }
-
-  /**
-   * Returns a function used to handle TransferProgressEvents.
-   */
-  onProgress(): (progress: TransferProgressEvent) => void {
-    return (progress: TransferProgressEvent) => {
-      this.setReceivedBytes(progress.loadedBytes)
     }
   }
 
@@ -184,120 +154,60 @@ export async function downloadCacheHttpClient(
     core.debug(`Aborting download, socket timed out after ${SocketTimeout} ms`)
   })
 
-  await pipeResponseToStream(downloadResponse, writeStream)
+  const contentLength = Number(downloadResponse.message.headers['content-length'])
+  if (!contentLength) {
+    throw new Error(`Missing Content-Length header on response`);
+  }
+  const downloadProgress = new DownloadProgress(contentLength)
+  downloadProgress.startDisplayTimer()
+  try {
+    await pipeResponseToStream(downloadResponse, writeStream, downloadProgress)
+  } finally {
+    downloadProgress.stopDisplayTimer()
+  }
 
-  // Validate download size.
-  const contentLengthHeader = downloadResponse.message.headers['content-length']
-
-  if (contentLengthHeader) {
-    const expectedLength = parseInt(contentLengthHeader)
-    const actualLength = utils.getArchiveFileSizeInBytes(archivePath)
-
-    if (actualLength !== expectedLength) {
-      throw new Error(
-        `Incomplete download. Expected file size: ${expectedLength}, actual file size: ${actualLength}`
-      )
-    }
-  } else {
-    core.debug('Unable to validate download, no Content-Length header')
+  const actualLength = utils.getArchiveFileSizeInBytes(archivePath)
+  if (actualLength !== contentLength) {
+    throw new Error(
+      `Incomplete download. Expected file size: ${contentLength}, actual file size: ${actualLength}`
+    )
   }
 }
 
-/**
- * Download the cache using the Azure Storage SDK.  Only call this method if the
- * URL points to an Azure Storage endpoint.
- *
- * @param archiveLocation the URL for the cache
- * @param archivePath the local path where the cache is saved
- * @param options the download options with the defaults set
- */
-export async function downloadCacheStorageSDK(
+export async function downloadCacheConcurrent(
   archiveLocation: string,
   archivePath: string,
-  options: DownloadOptions
+  archiveSize: number,
+  concurrency: number
 ): Promise<void> {
-  const client = new BlockBlobClient(archiveLocation, undefined, {
-    retryOptions: {
-      // Override the timeout used when downloading each 4 MB chunk
-      // The default is 2 min / MB, which is way too slow
-      tryTimeoutInMs: options.timeoutInMs
-    }
-  })
+  const fd = await fsPromises.open(archivePath, 'w')
+  await fd.truncate(archiveSize);
 
-  const properties = await client.getProperties()
-  const contentLength = properties.contentLength ?? -1
+  const httpClient = new HttpClient('actions/cache')
+  const downloadProgress = new DownloadProgress(archiveSize)
 
-  if (contentLength < 0) {
-    // We should never hit this condition, but just in case fall back to downloading the
-    // file as one large stream
-    core.debug(
-      'Unable to determine content length, downloading file with http-client...'
-    )
+  const chunkSize = Math.ceil(archiveSize/concurrency);
+  const results = [];
+  for (let offset = 0; offset < archiveSize; offset += chunkSize) {
+    const limit = Math.min(offset+chunkSize, archiveSize)-1 // inclusive range
+    core.debug(`Downloading chunk bytes=${offset}-${limit}`)
+    results.push((async () => {
+      const downloadResponse = await retryHttpClientResponse(
+        'downloadCache',
+        async () => httpClient.get(archiveLocation, {
+          Range: `bytes=${offset}-${limit}`
+        }))
 
-    await downloadCacheHttpClient(archiveLocation, archivePath)
-  } else {
-    // Use downloadToBuffer for faster downloads, since internally it splits the
-    // file into 4 MB chunks which can then be parallelized and retried independently
-    //
-    // If the file exceeds the buffer maximum length (~1 GB on 32-bit systems and ~2 GB
-    // on 64-bit systems), split the download into multiple segments
-    // ~2 GB = 2147483647, beyond this, we start getting out of range error. So, capping it accordingly.
-
-    // Updated segment size to 128MB = 134217728 bytes, to complete a segment faster and fail fast
-    const maxSegmentSize = Math.min(134217728, buffer.constants.MAX_LENGTH)
-    const downloadProgress = new DownloadProgress(contentLength)
-
-    const fd = fs.openSync(archivePath, 'w')
-
-    try {
-      downloadProgress.startDisplayTimer()
-      const controller = new AbortController()
-      const abortSignal = controller.signal
-      while (!downloadProgress.isDone()) {
-        const segmentStart =
-          downloadProgress.segmentOffset + downloadProgress.segmentSize
-
-        const segmentSize = Math.min(
-          maxSegmentSize,
-          contentLength - segmentStart
-        )
-
-        downloadProgress.nextSegment(segmentSize)
-        const result = await promiseWithTimeout(
-          options.segmentTimeoutInMs || 3600000,
-          client.downloadToBuffer(segmentStart, segmentSize, {
-            abortSignal,
-            concurrency: options.downloadConcurrency,
-            onProgress: downloadProgress.onProgress()
-          })
-        )
-        if (result === 'timeout') {
-          controller.abort()
-          throw new Error(
-            'Aborting cache download as the download time exceeded the timeout.'
-          )
-        } else if (Buffer.isBuffer(result)) {
-          fs.writeFileSync(fd, result)
-        }
-      }
-    } finally {
-      downloadProgress.stopDisplayTimer()
-      fs.closeSync(fd)
-    }
+      const w = fd.createWriteStream({ autoClose: false, start: offset })
+      await pipeResponseToStream(downloadResponse, w, downloadProgress)
+    })())
   }
-}
 
-const promiseWithTimeout = async (
-  timeoutMs: number,
-  promise: Promise<Buffer>
-): Promise<unknown> => {
-  let timeoutHandle: NodeJS.Timeout
-  const timeoutPromise = new Promise(resolve => {
-    timeoutHandle = setTimeout(() => resolve('timeout'), timeoutMs)
-  })
-
-  return Promise.race([promise, timeoutPromise]).then(result => {
-    clearTimeout(timeoutHandle)
-    return result
-  })
+  downloadProgress.startDisplayTimer()
+  try {
+    await Promise.all(results);
+  } finally {
+    downloadProgress.stopDisplayTimer()
+    fd.close();
+  }
 }

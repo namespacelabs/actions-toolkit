@@ -12,6 +12,7 @@ export interface ArtifactCacheEntry {
   cacheVersion?: string
   creationTime?: string
   archiveLocation?: string
+  size?: number
 }
 
 export interface ArtifactCacheList {

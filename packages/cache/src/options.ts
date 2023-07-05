@@ -32,8 +32,7 @@ export interface DownloadOptions {
   useAzureSdk?: boolean
 
   /**
-   * Number of parallel downloads (this option only applies when using
-   * the Azure SDK)
+   * Number of parallel downloads.
    *
    * @default 8
    */

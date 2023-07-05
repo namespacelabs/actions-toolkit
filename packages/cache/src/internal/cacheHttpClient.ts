@@ -20,7 +20,7 @@ import {
   ITypedResponseWithError,
   ArtifactCacheList
 } from './contracts'
-import {downloadCacheHttpClient, downloadCacheStorageSDK} from './downloadUtils'
+import {downloadCacheHttpClient, downloadCacheConcurrent} from './downloadUtils'
 import {
   DownloadOptions,
   UploadOptions,
@@ -175,17 +175,13 @@ async function printCachesListForDiagnostics(
 export async function downloadCache(
   archiveLocation: string,
   archivePath: string,
+  archiveSize: number,
   options?: DownloadOptions
 ): Promise<void> {
-  const archiveUrl = new URL(archiveLocation)
   const downloadOptions = getDownloadOptions(options)
 
-  if (
-    downloadOptions.useAzureSdk &&
-    archiveUrl.hostname.endsWith('.blob.core.windows.net')
-  ) {
-    // Use Azure storage SDK to download caches hosted on Azure to improve speed and reliability.
-    await downloadCacheStorageSDK(archiveLocation, archivePath, downloadOptions)
+  if (downloadOptions.downloadConcurrency! > 1) {
+    await downloadCacheConcurrent(archiveLocation, archivePath, archiveSize, downloadOptions.downloadConcurrency!)
   } else {
     // Otherwise, download using the Actions http-client.
     await downloadCacheHttpClient(archiveLocation, archivePath)
