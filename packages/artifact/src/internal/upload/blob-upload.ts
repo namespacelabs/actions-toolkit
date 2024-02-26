@@ -1,7 +1,8 @@
 import {BlobClient, BlockBlobUploadStreamOptions} from '@azure/storage-blob'
 import {TransferProgressEvent} from '@azure/core-http'
+import {HttpClient} from '@actions/http-client'
 import {ZipUploadStream} from './zip'
-import {getUploadChunkSize, getConcurrency} from '../shared/config'
+import {getUploadChunkSize, getConcurrency, directZipUpload} from '../shared/config'
 import * as core from '@actions/core'
 import * as crypto from 'crypto'
 import * as stream from 'stream'
@@ -53,19 +54,37 @@ export async function uploadZipToBlobStorage(
 
   core.info('Beginning upload of artifact content to blob storage')
 
-  try {
-    await blockBlobClient.uploadStream(
-      uploadStream,
-      bufferSize,
-      maxConcurrency,
-      options
+  if (directZipUpload()) {
+    const httpClient = new HttpClient(
+      'actions/artifact',
     )
-  } catch (error) {
-    if (NetworkError.isNetworkErrorCode(error?.code)) {
-      throw new NetworkError(error?.code)
-    }
 
-    throw error
+    const res = await httpClient.sendStream(
+      'PUT',
+      authenticatedUploadURL,
+      uploadStream,
+    )
+
+    if (!res.message.statusCode || res.message.statusCode < 200 || res.message.statusCode >= 300) {
+      throw new Error(
+        `Service responded with ${res.message.statusCode} during artifact upload.`
+      )
+    }
+  } else {
+    try {
+      await blockBlobClient.uploadStream(
+        uploadStream,
+        bufferSize,
+        maxConcurrency,
+        options
+      )
+    } catch (error) {
+      if (NetworkError.isNetworkErrorCode(error?.code)) {
+        throw new NetworkError(error?.code)
+      }
+
+      throw error
+    }
   }
 
   core.info('Finished uploading artifact content to blob storage!')
@@ -74,7 +93,7 @@ export async function uploadZipToBlobStorage(
   sha256Hash = hashStream.read() as string
   core.info(`SHA256 hash of uploaded artifact zip is ${sha256Hash}`)
 
-  if (uploadByteCount === 0) {
+  if (uploadByteCount === 0 && !directZipUpload()) {
     core.warning(
       `No data was uploaded to blob storage. Reported upload byte count is 0.`
     )

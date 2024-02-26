@@ -42,6 +42,15 @@ export function getNamespaceResultsServiceUrl(): string {
   return new URL(resultsUrl).origin
 }
 
+export function directZipUpload(): boolean {
+  const set = process.env['NAMESPACE_ACTIONS_DIRECT_ZIP_UPLOAD']
+  if (!set) {
+    return false
+  }
+
+  return JSON.parse(set)
+}
+
 export function getNamespaceResultsService(): string | undefined {
   return process.env['NAMESPACE_ACTIONS_RESULTS_SERVICE']
 }
