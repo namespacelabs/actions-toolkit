@@ -72,6 +72,7 @@ export async function uploadZipToBlobStorage(
     })
 
     const stat = fs.statSync(tempFile)
+    uploadByteCount = stat.size
 
     const httpClient = new HttpClient(
       'actions/artifact',
@@ -114,7 +115,7 @@ export async function uploadZipToBlobStorage(
   sha256Hash = hashStream.read() as string
   core.info(`SHA256 hash of uploaded artifact zip is ${sha256Hash}`)
 
-  if (uploadByteCount === 0 && !directZipUpload()) {
+  if (uploadByteCount === 0) {
     core.warning(
       `No data was uploaded to blob storage. Reported upload byte count is 0.`
     )
