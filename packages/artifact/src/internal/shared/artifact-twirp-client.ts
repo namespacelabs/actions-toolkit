@@ -2,7 +2,7 @@ import {HttpClient, HttpClientResponse, HttpCodes} from '@actions/http-client'
 import {BearerCredentialHandler} from '@actions/http-client/lib/auth'
 import {info, debug} from '@actions/core'
 import {ArtifactServiceClientJSON} from '../../generated'
-import {getNamespaceResultsServiceUrl, getNamespaceToken} from './config'
+import {getNamespaceResultsServiceUrl, getNamespaceToken, getNamespaceResultsService} from './config'
 import {getUserAgentString} from './user-agent'
 import {NetworkError, UsageError} from './errors'
 
@@ -46,6 +46,18 @@ class ArtifactHttpClient implements Rpc {
     ])
   }
 
+  getUrl(
+    service: string,
+    method: string,
+  ):URL {
+    const namespaceService = getNamespaceResultsService()
+    if (namespaceService) {
+      new URL(`/${namespaceService}/${method}`, this.baseUrl)
+    }
+
+    return new URL(`/twirp/${service}/${method}`, this.baseUrl)
+  }
+
   // This function satisfies the Rpc interface. It is compatible with the JSON
   // JSON generated client.
   async request(
@@ -54,7 +66,7 @@ class ArtifactHttpClient implements Rpc {
     contentType: 'application/json' | 'application/protobuf',
     data: object | Uint8Array
   ): Promise<object | Uint8Array> {
-    const url = new URL(`/twirp/${service}/${method}`, this.baseUrl).href
+    const url = this.getUrl(service, method).href
     debug(`[Request] ${method} ${url}`)
     const headers = {
       'Content-Type': contentType

@@ -42,6 +42,10 @@ export function getNamespaceResultsServiceUrl(): string {
   return new URL(resultsUrl).origin
 }
 
+export function getNamespaceResultsService(): string | undefined {
+  return process.env['NAMESPACE_ACTIONS_RESULTS_SERVICE']
+}
+
 export function isGhes(): boolean {
   const ghUrl = new URL(
     process.env['GITHUB_SERVER_URL'] || 'https://github.com'
