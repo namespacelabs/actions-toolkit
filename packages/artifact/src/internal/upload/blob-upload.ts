@@ -22,7 +22,6 @@ export interface BlobUploadResponse {
 }
 
 export async function uploadZipToBlobStorage(
-  name: string,
   authenticatedUploadURL: string,
   zipUploadStream: ZipUploadStream
 ): Promise<BlobUploadResponse> {
@@ -62,8 +61,8 @@ export async function uploadZipToBlobStorage(
       throw new Error('Unable to get the RUNNER_TEMP env variable')
     }
   
-    // TODO encode the name to always have a valid filename.
-    const tempFile = tempDirectory + '/' + name + '.zip'
+    const dir = fs.mkdtempSync(tempDirectory)
+    const tempFile = dir + '/data.zip'
     
     await new Promise<void>(resolve => {
       const file = fs.createWriteStream(tempFile)
