@@ -2,7 +2,7 @@ import {HttpClient, HttpClientResponse, HttpCodes} from '@actions/http-client'
 import {BearerCredentialHandler} from '@actions/http-client/lib/auth'
 import {info, debug} from '@actions/core'
 import {ArtifactServiceClientJSON} from '../../generated'
-import {getResultsServiceUrl, getRuntimeToken} from './config'
+import {getNamespaceResultsServiceUrl, getNamespaceToken} from './config'
 import {getUserAgentString} from './user-agent'
 import {NetworkError, UsageError} from './errors'
 
@@ -29,8 +29,8 @@ class ArtifactHttpClient implements Rpc {
     baseRetryIntervalMilliseconds?: number,
     retryMultiplier?: number
   ) {
-    const token = getRuntimeToken()
-    this.baseUrl = getResultsServiceUrl()
+    const token = getNamespaceToken()
+    this.baseUrl = getNamespaceResultsServiceUrl()
     if (maxAttempts) {
       this.maxAttempts = maxAttempts
     }

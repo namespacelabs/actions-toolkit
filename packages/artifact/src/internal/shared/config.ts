@@ -1,4 +1,5 @@
 import os from 'os'
+import * as fs from 'fs'
 
 // Used for controlling the highWaterMark value of the zip that is being streamed
 // The same value is used as the chunk size that is use during upload to blob storage
@@ -14,10 +15,28 @@ export function getRuntimeToken(): string {
   return token
 }
 
+export function getNamespaceToken(): string {
+  const tokenFile = process.env['NSC_TOKEN_FILE']
+  if (!tokenFile) {
+    throw new Error('Unable to get the NSC_TOKEN_FILE env variable')
+  }
+  const tokenJSON = fs.readFileSync(tokenFile, 'utf8')
+  return JSON.parse(tokenJSON).bearer_token
+}
+
 export function getResultsServiceUrl(): string {
   const resultsUrl = process.env['ACTIONS_RESULTS_URL']
   if (!resultsUrl) {
     throw new Error('Unable to get the ACTIONS_RESULTS_URL env variable')
+  }
+
+  return new URL(resultsUrl).origin
+}
+
+export function getNamespaceResultsServiceUrl(): string {
+  const resultsUrl = process.env['NAMESPACE_ACTIONS_RESULTS_URL']
+  if (!resultsUrl) {
+    throw new Error('Unable to get the NAMESPACE_ACTIONS_RESULTS_URL env variable')
   }
 
   return new URL(resultsUrl).origin
