@@ -52,7 +52,7 @@ class ArtifactHttpClient implements Rpc {
   ):URL {
     const namespaceService = getNamespaceResultsService()
     if (namespaceService) {
-      new URL(`/${namespaceService}/${method}`, this.baseUrl)
+      return new URL(`/${namespaceService}/${method}`, this.baseUrl)
     }
 
     return new URL(`/twirp/${service}/${method}`, this.baseUrl)
