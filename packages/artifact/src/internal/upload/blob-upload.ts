@@ -6,6 +6,7 @@ import {getUploadChunkSize, getConcurrency, directZipUpload} from '../shared/con
 import * as core from '@actions/core'
 import * as crypto from 'crypto'
 import * as stream from 'stream'
+import * as fs from 'fs'
 import {NetworkError} from '../shared/errors'
 
 export interface BlobUploadResponse {
@@ -21,6 +22,7 @@ export interface BlobUploadResponse {
 }
 
 export async function uploadZipToBlobStorage(
+  name: string,
   authenticatedUploadURL: string,
   zipUploadStream: ZipUploadStream
 ): Promise<BlobUploadResponse> {
@@ -55,6 +57,19 @@ export async function uploadZipToBlobStorage(
   core.info('Beginning upload of artifact content to blob storage')
 
   if (directZipUpload()) {
+    const tempDirectory = process.env['RUNNER_TEMP']
+    if (!tempDirectory) {
+      throw new Error('Unable to get the RUNNER_TEMP env variable')
+    }
+  
+    // TODO encode the name to always have a valid filename.
+    const tempFile = tempDirectory + '/' + name + '.zip'
+    
+    const file = fs.createWriteStream(tempFile)
+    await uploadStream.pipe(file)
+
+    const stat = fs.statSync(tempFile)
+
     const httpClient = new HttpClient(
       'actions/artifact',
     )
@@ -62,7 +77,10 @@ export async function uploadZipToBlobStorage(
     const res = await httpClient.sendStream(
       'PUT',
       authenticatedUploadURL,
-      uploadStream,
+      fs.createReadStream(tempFile),
+      {
+        "Content-Length": stat.size
+      },
     )
 
     if (!res.message.statusCode || res.message.statusCode < 200 || res.message.statusCode >= 300) {

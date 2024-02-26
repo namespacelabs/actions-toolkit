@@ -75,6 +75,7 @@ export async function uploadArtifact(
 
   // Upload zip to blob storage
   const uploadResult = await uploadZipToBlobStorage(
+    name,
     createArtifactResp.signedUploadUrl,
     zipUploadStream
   )
