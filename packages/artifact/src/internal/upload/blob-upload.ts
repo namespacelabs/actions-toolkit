@@ -65,8 +65,11 @@ export async function uploadZipToBlobStorage(
     // TODO encode the name to always have a valid filename.
     const tempFile = tempDirectory + '/' + name + '.zip'
     
-    const file = fs.createWriteStream(tempFile)
-    await uploadStream.pipe(file)
+    await new Promise<void>(resolve => {
+      const file = fs.createWriteStream(tempFile)
+      uploadStream.pipe(file)
+      file.on('finish', resolve)
+    })
 
     const stat = fs.statSync(tempFile)
 
