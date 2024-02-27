@@ -6,6 +6,7 @@ import {getUploadChunkSize, getConcurrency, directZipUpload} from '../shared/con
 import * as core from '@actions/core'
 import * as crypto from 'crypto'
 import * as stream from 'stream'
+import * as streamPromises from 'stream/promises'
 import * as fs from 'fs'
 import {NetworkError} from '../shared/errors'
 
@@ -63,12 +64,8 @@ export async function uploadZipToBlobStorage(
   
     const dir = fs.mkdtempSync(tempDirectory)
     const tempFile = dir + '/data.zip'
-    
-    await new Promise<void>(resolve => {
-      const file = fs.createWriteStream(tempFile)
-      uploadStream.pipe(file)
-      file.on('finish', resolve)
-    })
+
+    await streamPromises.pipeline(uploadStream, fs.createWriteStream(tempFile))
 
     const stat = fs.statSync(tempFile)
     uploadByteCount = stat.size
@@ -91,6 +88,10 @@ export async function uploadZipToBlobStorage(
         `Service responded with ${res.message.statusCode} during artifact upload.`
       )
     }
+
+    // Make sure to relese resources.
+    await res.readBody()
+    httpClient.dispose()
   } else {
     try {
       await blockBlobClient.uploadStream(
