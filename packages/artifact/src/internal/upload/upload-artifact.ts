@@ -84,7 +84,8 @@ export async function uploadArtifact(
     workflowRunBackendId: backendIds.workflowRunBackendId,
     workflowJobRunBackendId: backendIds.workflowJobRunBackendId,
     name,
-    size: uploadResult.uploadSize ? uploadResult.uploadSize.toString() : '0'
+    size: uploadResult.uploadSize ? uploadResult.uploadSize.toString() : '0',
+    etag: uploadResult.uploadEtag ?? '',
   }
 
   if (uploadResult.sha256Hash) {
@@ -110,6 +111,7 @@ export async function uploadArtifact(
 
   return {
     size: uploadResult.uploadSize,
-    id: Number(artifactId)
+    id: Number(artifactId),
+    downloadUrl: finalizeArtifactResp.downloadUrl,
   }
 }

@@ -20,6 +20,11 @@ export interface BlobUploadResponse {
    * The SHA256 hash of the uploaded file. Empty if the upload failed
    */
   sha256Hash?: string
+
+  /**
+   * Etag header returned from upload service.
+   */
+  uploadEtag?: string
 }
 
 export async function uploadZipToBlobStorage(
@@ -27,6 +32,7 @@ export async function uploadZipToBlobStorage(
   zipUploadStream: ZipUploadStream
 ): Promise<BlobUploadResponse> {
   let uploadByteCount = 0
+  let uploadEtag: string | undefined
 
   const maxConcurrency = getConcurrency()
   const bufferSize = getUploadChunkSize()
@@ -88,6 +94,7 @@ export async function uploadZipToBlobStorage(
         `Service responded with ${res.message.statusCode} during artifact upload.`
       )
     }
+    uploadEtag = res.message.headers['etag']
 
     // Make sure to relese resources.
     await res.readBody()
@@ -123,6 +130,7 @@ export async function uploadZipToBlobStorage(
 
   return {
     uploadSize: uploadByteCount,
-    sha256Hash
+    sha256Hash,
+    uploadEtag
   }
 }

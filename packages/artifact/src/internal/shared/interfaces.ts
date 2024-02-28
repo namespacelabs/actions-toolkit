@@ -12,6 +12,8 @@ export interface UploadArtifactResponse {
    * This ID can be used as input to other APIs to download, delete or get more information about an artifact: https://docs.github.com/en/rest/actions/artifacts
    */
   id?: number
+
+  downloadUrl?: string
 }
 
 /**

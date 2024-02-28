@@ -77,6 +77,8 @@ export interface FinalizeArtifactRequest {
      * @generated from protobuf field: google.protobuf.StringValue hash = 5;
      */
     hash?: StringValue; // optional
+
+    etag: string;
 }
 /**
  * @generated from protobuf message github.actions.results.api.v1.FinalizeArtifactResponse
@@ -90,6 +92,8 @@ export interface FinalizeArtifactResponse {
      * @generated from protobuf field: int64 artifact_id = 2;
      */
     artifactId: string;
+
+    downloadUrl: string;
 }
 /**
  * @generated from protobuf message github.actions.results.api.v1.ListArtifactsRequest
@@ -363,11 +367,12 @@ class FinalizeArtifactRequest$Type extends MessageType<FinalizeArtifactRequest> 
             { no: 2, name: "workflow_job_run_backend_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
             { no: 3, name: "name", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
             { no: 4, name: "size", kind: "scalar", T: 3 /*ScalarType.INT64*/ },
-            { no: 5, name: "hash", kind: "message", T: () => StringValue }
+            { no: 5, name: "hash", kind: "message", T: () => StringValue },
+            { no: 6, name: "etag", kind: "scalar", T: 9 },
         ]);
     }
     create(value?: PartialMessage<FinalizeArtifactRequest>): FinalizeArtifactRequest {
-        const message = { workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0" };
+        const message = { workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<FinalizeArtifactRequest>(this, message, value);
@@ -435,11 +440,12 @@ class FinalizeArtifactResponse$Type extends MessageType<FinalizeArtifactResponse
     constructor() {
         super("github.actions.results.api.v1.FinalizeArtifactResponse", [
             { no: 1, name: "ok", kind: "scalar", T: 8 /*ScalarType.BOOL*/ },
-            { no: 2, name: "artifact_id", kind: "scalar", T: 3 /*ScalarType.INT64*/ }
+            { no: 2, name: "artifact_id", kind: "scalar", T: 3 /*ScalarType.INT64*/ },
+            { no: 3, name: "download_url", kind: "scalar", T: 9 },
         ]);
     }
     create(value?: PartialMessage<FinalizeArtifactResponse>): FinalizeArtifactResponse {
-        const message = { ok: false, artifactId: "0" };
+        const message = { ok: false, artifactId: "0", downloadUrl: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<FinalizeArtifactResponse>(this, message, value);
