@@ -86,6 +86,7 @@ export async function uploadArtifact(
     name,
     size: uploadResult.uploadSize ? uploadResult.uploadSize.toString() : '0',
     etag: uploadResult.uploadEtag ?? '',
+    uploadId: createArtifactResp.uploadId,
   }
 
   if (uploadResult.sha256Hash) {

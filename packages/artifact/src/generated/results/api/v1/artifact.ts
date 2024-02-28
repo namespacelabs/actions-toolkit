@@ -52,6 +52,8 @@ export interface CreateArtifactResponse {
      * @generated from protobuf field: string signed_upload_url = 2;
      */
     signedUploadUrl: string;
+
+    uploadId: string;
 }
 /**
  * @generated from protobuf message github.actions.results.api.v1.FinalizeArtifactRequest
@@ -79,6 +81,7 @@ export interface FinalizeArtifactRequest {
     hash?: StringValue; // optional
 
     etag: string;
+    uploadId: string;
 }
 /**
  * @generated from protobuf message github.actions.results.api.v1.FinalizeArtifactResponse
@@ -310,11 +313,12 @@ class CreateArtifactResponse$Type extends MessageType<CreateArtifactResponse> {
     constructor() {
         super("github.actions.results.api.v1.CreateArtifactResponse", [
             { no: 1, name: "ok", kind: "scalar", T: 8 /*ScalarType.BOOL*/ },
-            { no: 2, name: "signed_upload_url", kind: "scalar", T: 9 /*ScalarType.STRING*/ }
+            { no: 2, name: "signed_upload_url", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 3, name: "upload_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ }
         ]);
     }
     create(value?: PartialMessage<CreateArtifactResponse>): CreateArtifactResponse {
-        const message = { ok: false, signedUploadUrl: "" };
+        const message = { ok: false, signedUploadUrl: "", uploadId: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<CreateArtifactResponse>(this, message, value);
@@ -369,10 +373,11 @@ class FinalizeArtifactRequest$Type extends MessageType<FinalizeArtifactRequest> 
             { no: 4, name: "size", kind: "scalar", T: 3 /*ScalarType.INT64*/ },
             { no: 5, name: "hash", kind: "message", T: () => StringValue },
             { no: 6, name: "etag", kind: "scalar", T: 9 },
+            { no: 6, name: "upload_id", kind: "scalar", T: 9 },
         ]);
     }
     create(value?: PartialMessage<FinalizeArtifactRequest>): FinalizeArtifactRequest {
-        const message = { workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "" };
+        const message = { workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "", uploadId: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<FinalizeArtifactRequest>(this, message, value);
