@@ -48,6 +48,7 @@ export async function uploadArtifact(
 
   // create the artifact
   const createArtifactReq: CreateArtifactRequest = {
+    runId: backendIds.publicRunId,
     workflowRunBackendId: backendIds.workflowRunBackendId,
     workflowJobRunBackendId: backendIds.workflowJobRunBackendId,
     name,
@@ -81,6 +82,7 @@ export async function uploadArtifact(
 
   // finalize the artifact
   const finalizeArtifactReq: FinalizeArtifactRequest = {
+    runId: backendIds.publicRunId,
     workflowRunBackendId: backendIds.workflowRunBackendId,
     workflowJobRunBackendId: backendIds.workflowJobRunBackendId,
     name,

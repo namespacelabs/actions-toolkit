@@ -5,6 +5,7 @@ import jwt_decode from 'jwt-decode'
 export interface BackendIds {
   workflowRunBackendId: string
   workflowJobRunBackendId: string
+  publicRunId: string
 }
 
 interface ActionsToken {
@@ -56,9 +57,15 @@ export function getBackendIdsFromToken(): BackendIds {
       throw InvalidJwtError
     }
 
+    const publicRunId = process.env["GITHUB_JOB"]
+    if (publicRunId == null) {
+      throw new Error("failed to get GITHUB_JOB environment variable")
+    }
+
     const ids = {
       workflowRunBackendId: scopeParts[1],
-      workflowJobRunBackendId: scopeParts[2]
+      workflowJobRunBackendId: scopeParts[2],
+      publicRunId: publicRunId,
     }
 
     core.debug(`Workflow Run Backend ID: ${ids.workflowRunBackendId}`)

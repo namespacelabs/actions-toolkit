@@ -78,10 +78,11 @@ export async function getArtifactInternal(
 ): Promise<GetArtifactResponse> {
   const artifactClient = internalArtifactTwirpClient()
 
-  const {workflowRunBackendId, workflowJobRunBackendId} =
+  const {publicRunId, workflowRunBackendId, workflowJobRunBackendId} =
     getBackendIdsFromToken()
 
   const req: ListArtifactsRequest = {
+    runId: publicRunId,
     workflowRunBackendId,
     workflowJobRunBackendId,
     nameFilter: StringValue.create({value: artifactName})
