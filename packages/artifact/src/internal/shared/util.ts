@@ -57,9 +57,9 @@ export function getBackendIdsFromToken(): BackendIds {
       throw InvalidJwtError
     }
 
-    const publicRunId = process.env["GITHUB_JOB"]
+    const publicRunId = process.env["GITHUB_RUN_ID"]
     if (publicRunId == null) {
-      throw new Error("failed to get GITHUB_JOB environment variable")
+      throw new Error("failed to get GITHUB_RUN_ID environment variable")
     }
 
     const ids = {
@@ -70,6 +70,7 @@ export function getBackendIdsFromToken(): BackendIds {
 
     core.debug(`Workflow Run Backend ID: ${ids.workflowRunBackendId}`)
     core.debug(`Workflow Job Run Backend ID: ${ids.workflowJobRunBackendId}`)
+    core.debug(`Public Run ID: ${ids.publicRunId}`)
 
     return ids
   }
