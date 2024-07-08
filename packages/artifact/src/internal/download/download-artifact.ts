@@ -53,7 +53,7 @@ async function streamExtract(url: string, directory: string): Promise<void> {
         )
       }
       retryCount++
-      core.debug(
+      core.error(
         `Failed to download artifact after ${retryCount} retries due to ${error.message}. Retrying in 5 seconds...`
       )
       // wait 5 seconds before retrying
