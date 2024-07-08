@@ -127,7 +127,6 @@ export async function uploadZipToBlobStorage(
       `No data was uploaded to blob storage. Reported upload byte count is 0.`
     )
   }
-
   return {
     uploadSize: uploadByteCount,
     sha256Hash,
