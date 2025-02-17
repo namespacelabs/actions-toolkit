@@ -6,6 +6,7 @@ export interface BackendIds {
   workflowRunBackendId: string
   workflowJobRunBackendId: string
   publicRunId: string
+  attemptNo: number
 }
 
 interface ActionsToken {
@@ -62,10 +63,16 @@ export function getBackendIdsFromToken(): BackendIds {
       throw new Error("failed to get GITHUB_RUN_ID environment variable")
     }
 
+    const attemptNo = process.env["GITHUB_RUN_ATTEMPT"]
+    if (attemptNo == null) {
+      throw new Error("failed to get GITHUB_RUN_ATTEMPT environment variable")
+    }
+
     const ids = {
       workflowRunBackendId: scopeParts[1],
       workflowJobRunBackendId: scopeParts[2],
       publicRunId: publicRunId,
+      attemptNo: Number(attemptNo),
     }
 
     core.debug(`Workflow Run Backend ID: ${ids.workflowRunBackendId}`)

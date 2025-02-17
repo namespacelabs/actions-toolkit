@@ -157,7 +157,7 @@ export async function downloadArtifactInternal(
 
   const artifactClient = internalArtifactTwirpClient()
 
-  const {publicRunId, workflowRunBackendId, workflowJobRunBackendId} =
+  const {publicRunId, attemptNo, workflowRunBackendId, workflowJobRunBackendId} =
     getBackendIdsFromToken()
 
   const listReq: ListArtifactsRequest = {
@@ -181,6 +181,7 @@ export async function downloadArtifactInternal(
 
   const signedReq: GetSignedArtifactURLRequest = {
     runId: artifacts[0].runId,
+    attemptNo: attemptNo,
     workflowRunBackendId: artifacts[0].workflowRunBackendId,
     workflowJobRunBackendId: artifacts[0].workflowJobRunBackendId,
     name: artifacts[0].name

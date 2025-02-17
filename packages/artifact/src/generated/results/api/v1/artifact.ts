@@ -20,6 +20,7 @@ import { Timestamp } from "../../../google/protobuf/timestamp";
  */
 export interface CreateArtifactRequest {
     runId: string;
+    attemptNo: number;
     /**
      * @generated from protobuf field: string workflow_run_backend_id = 1;
      */
@@ -61,6 +62,7 @@ export interface CreateArtifactResponse {
  */
 export interface FinalizeArtifactRequest {
     runId: string;
+    attemptNo: number;
     /**
      * @generated from protobuf field: string workflow_run_backend_id = 1;
      */
@@ -144,6 +146,7 @@ export interface ListArtifactsResponse {
  */
 export interface ListArtifactsResponse_MonolithArtifact {
     runId: string;
+    attemptNo: number;
     /**
      * The backend plan ID
      *
@@ -186,6 +189,7 @@ export interface ListArtifactsResponse_MonolithArtifact {
  */
 export interface GetSignedArtifactURLRequest {
     runId: string;
+    attemptNo: number;
     /**
      * @generated from protobuf field: string workflow_run_backend_id = 1;
      */
@@ -249,10 +253,11 @@ class CreateArtifactRequest$Type extends MessageType<CreateArtifactRequest> {
             { no: 4, name: "expires_at", kind: "message", T: () => Timestamp },
             { no: 5, name: "version", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
             { no: 6, name: "run_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 7, name: "attempt_no", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
         ]);
     }
     create(value?: PartialMessage<CreateArtifactRequest>): CreateArtifactRequest {
-        const message = {runId: "", workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", version: 0 };
+        const message = { runId: "", attemptNo: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", version: 0 };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<CreateArtifactRequest>(this, message, value);
@@ -382,10 +387,11 @@ class FinalizeArtifactRequest$Type extends MessageType<FinalizeArtifactRequest> 
             { no: 6, name: "etag", kind: "scalar", T: 9 },
             { no: 6, name: "upload_id", kind: "scalar", T: 9 },
             { no: 8, name: "run_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 9, name: "attempt_no", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
         ]);
     }
     create(value?: PartialMessage<FinalizeArtifactRequest>): FinalizeArtifactRequest {
-        const message = { runId: "", workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "", uploadId: "" };
+        const message = { runId: "", attemptNo: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "", uploadId: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<FinalizeArtifactRequest>(this, message, value);
@@ -630,10 +636,11 @@ class ListArtifactsResponse_MonolithArtifact$Type extends MessageType<ListArtifa
             { no: 5, name: "size", kind: "scalar", T: 3 /*ScalarType.INT64*/ },
             { no: 6, name: "created_at", kind: "message", T: () => Timestamp },
             { no: 7, name: "run_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 8, name: "attempt_no", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
         ]);
     }
     create(value?: PartialMessage<ListArtifactsResponse_MonolithArtifact>): ListArtifactsResponse_MonolithArtifact {
-        const message = { runId: "", workflowRunBackendId: "", workflowJobRunBackendId: "", databaseId: "0", name: "", size: "0" };
+        const message = { runId: "", attemptNo: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", databaseId: "0", name: "", size: "0" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<ListArtifactsResponse_MonolithArtifact>(this, message, value);
@@ -710,10 +717,11 @@ class GetSignedArtifactURLRequest$Type extends MessageType<GetSignedArtifactURLR
             { no: 2, name: "workflow_job_run_backend_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
             { no: 3, name: "name", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
             { no: 4, name: "run_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
+            { no: 5, name: "attempt_no", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
         ]);
     }
     create(value?: PartialMessage<GetSignedArtifactURLRequest>): GetSignedArtifactURLRequest {
-        const message = { runId: "", workflowRunBackendId: "", workflowJobRunBackendId: "", name: "" };
+        const message = { runId: "", attemptNo: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", name: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<GetSignedArtifactURLRequest>(this, message, value);

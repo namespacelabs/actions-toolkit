@@ -66,7 +66,7 @@ export async function deleteArtifactInternal(
 ): Promise<DeleteArtifactResponse> {
   const artifactClient = internalArtifactTwirpClient()
 
-  const {publicRunId, workflowRunBackendId, workflowJobRunBackendId} =
+  const {publicRunId, attemptNo, workflowRunBackendId, workflowJobRunBackendId} =
     getBackendIdsFromToken()
 
   const listReq: ListArtifactsRequest = {
