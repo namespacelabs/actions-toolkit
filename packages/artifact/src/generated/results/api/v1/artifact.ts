@@ -63,6 +63,7 @@ export interface CreateArtifactResponse {
 export interface FinalizeArtifactRequest {
     runId: string;
     attemptNo: number;
+    version: number;
     /**
      * @generated from protobuf field: string workflow_run_backend_id = 1;
      */
@@ -388,10 +389,11 @@ class FinalizeArtifactRequest$Type extends MessageType<FinalizeArtifactRequest> 
             { no: 6, name: "upload_id", kind: "scalar", T: 9 },
             { no: 8, name: "run_id", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
             { no: 9, name: "attempt_no", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
+            { no: 10, name: "version", kind: "scalar", T: 5 /*ScalarType.INT32*/ },
         ]);
     }
     create(value?: PartialMessage<FinalizeArtifactRequest>): FinalizeArtifactRequest {
-        const message = { runId: "", attemptNo: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "", uploadId: "" };
+        const message = { runId: "", attemptNo: 0, version: 0, workflowRunBackendId: "", workflowJobRunBackendId: "", name: "", size: "0", etag: "", uploadId: "" };
         globalThis.Object.defineProperty(message, MESSAGE_TYPE, { enumerable: false, value: this });
         if (value !== undefined)
             reflectionMergePartial<FinalizeArtifactRequest>(this, message, value);
