@@ -6,7 +6,10 @@ import {defaults as defaultGitHubOptions} from '@actions/github/lib/utils'
 import {getRetryOptions} from './retry-options'
 import {requestLog} from '@octokit/plugin-request-log'
 import {GetArtifactResponse} from '../shared/interfaces'
-import {getBackendIdsFromToken} from '../shared/util'
+import {
+  BackendIds,
+  getBackendIdsFromTokenOrOverride
+} from '../shared/util'
 import {getUserAgentString} from '../shared/user-agent'
 import {internalArtifactTwirpClient} from '../shared/artifact-twirp-client'
 import {ListArtifactsRequest, StringValue, Timestamp} from '../../generated'
@@ -74,12 +77,13 @@ export async function getArtifactPublic(
 }
 
 export async function getArtifactInternal(
-  artifactName: string
+  artifactName: string,
+  override?: BackendIds,
 ): Promise<GetArtifactResponse> {
   const artifactClient = internalArtifactTwirpClient()
 
   const {publicRunId, attemptNo, workflowRunBackendId, workflowJobRunBackendId} =
-    getBackendIdsFromToken()
+    getBackendIdsFromTokenOrOverride(override)
 
   const req: ListArtifactsRequest = {
     runId: publicRunId,

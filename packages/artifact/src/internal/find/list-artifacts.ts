@@ -8,7 +8,10 @@ import {requestLog} from '@octokit/plugin-request-log'
 import {retry} from '@octokit/plugin-retry'
 import {OctokitOptions} from '@octokit/core/dist-types/types'
 import {internalArtifactTwirpClient} from '../shared/artifact-twirp-client'
-import {getBackendIdsFromToken} from '../shared/util'
+import {
+  BackendIds,
+  getBackendIdsFromTokenOrOverride
+} from '../shared/util'
 import {ListArtifactsRequest, Timestamp} from '../../generated'
 
 // Limiting to 1000 for perf reasons
@@ -113,12 +116,13 @@ export async function listArtifactsPublic(
 }
 
 export async function listArtifactsInternal(
-  latest = false
+  latest = false,
+  override?: BackendIds
 ): Promise<ListArtifactsResponse> {
   const artifactClient = internalArtifactTwirpClient()
 
   const {publicRunId, workflowRunBackendId, workflowJobRunBackendId} =
-    getBackendIdsFromToken()
+    getBackendIdsFromTokenOrOverride(override)
 
   const req: ListArtifactsRequest = {
     runId: publicRunId,

@@ -17,6 +17,10 @@ const InvalidJwtError = new Error(
   'Failed to get backend IDs: The provided JWT token is invalid and/or missing claims'
 )
 
+export function getBackendIdsFromTokenOrOverride(override?: BackendIds): BackendIds {
+  return override ?? getBackendIdsFromToken()
+}
+
 // uses the JWT token claims to get the
 // workflow run and workflow job run backend ids
 export function getBackendIdsFromToken(): BackendIds {

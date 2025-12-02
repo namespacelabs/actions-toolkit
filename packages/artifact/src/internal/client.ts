@@ -12,16 +12,10 @@ import {
   DeleteArtifactResponse
 } from './shared/interfaces'
 import {uploadArtifact} from './upload/upload-artifact'
-import {
-  downloadArtifactPublic,
-  downloadArtifactInternal
-} from './download/download-artifact'
-import {
-  deleteArtifactPublic,
-  deleteArtifactInternal
-} from './delete/delete-artifact'
-import {getArtifactPublic, getArtifactInternal} from './find/get-artifact'
-import {listArtifactsPublic, listArtifactsInternal} from './find/list-artifacts'
+import {downloadArtifactInternal} from './download/download-artifact'
+import {deleteArtifactInternal} from './delete/delete-artifact'
+import {getArtifactInternal} from './find/get-artifact'
+import {listArtifactsInternal} from './find/list-artifacts'
 import {GHESNotSupportedError} from './shared/errors'
 
 /**
@@ -146,17 +140,16 @@ If the error persists, please check whether Actions is operating normally at [ht
 
       if (options?.findBy) {
         const {
-          findBy: {repositoryOwner, repositoryName, token},
+          findBy: {workflowRunId, repositoryOwner, repositoryName, token},
           ...downloadOptions
         } = options
 
-        return downloadArtifactPublic(
-          artifactId,
-          repositoryOwner,
-          repositoryName,
-          token,
-          downloadOptions
-        )
+        return downloadArtifactInternal(artifactId, options, {
+          publicRunId: workflowRunId.toString(),
+          workflowRunBackendId: "", // Deprecated and unused, safe to leave empty
+          workflowJobRunBackendId: "", // Deprecated and unused, safe to leave empty
+          attemptNo: 1
+        })
       }
 
       return downloadArtifactInternal(artifactId, options)
@@ -186,13 +179,12 @@ If the error persists, please check whether Actions and API requests are operati
           findBy: {workflowRunId, repositoryOwner, repositoryName, token}
         } = options
 
-        return listArtifactsPublic(
-          workflowRunId,
-          repositoryOwner,
-          repositoryName,
-          token,
-          options?.latest
-        )
+        return listArtifactsInternal(options?.latest, {
+          publicRunId: workflowRunId.toString(),
+          workflowRunBackendId: "", // Deprecated and unused, safe to leave empty
+          workflowJobRunBackendId: "", // Deprecated and unused, safe to leave empty
+          attemptNo: 1
+        })
       }
 
       return listArtifactsInternal(options?.latest)
@@ -223,13 +215,12 @@ If the error persists, please check whether Actions and API requests are operati
           findBy: {workflowRunId, repositoryOwner, repositoryName, token}
         } = options
 
-        return getArtifactPublic(
-          artifactName,
-          workflowRunId,
-          repositoryOwner,
-          repositoryName,
-          token
-        )
+        return getArtifactInternal(artifactName, {
+          publicRunId: workflowRunId.toString(),
+          workflowRunBackendId: "", // Deprecated and unused, safe to leave empty
+          workflowJobRunBackendId: "", // Deprecated and unused, safe to leave empty
+          attemptNo: 1
+        })
       }
 
       return getArtifactInternal(artifactName)
@@ -259,13 +250,12 @@ If the error persists, please check whether Actions and API requests are operati
           findBy: {repositoryOwner, repositoryName, workflowRunId, token}
         } = options
 
-        return deleteArtifactPublic(
-          artifactName,
-          workflowRunId,
-          repositoryOwner,
-          repositoryName,
-          token
-        )
+        return deleteArtifactInternal(artifactName, {
+          publicRunId: workflowRunId.toString(),
+          workflowRunBackendId: "", // Deprecated and unused, safe to leave empty
+          workflowJobRunBackendId: "", // Deprecated and unused, safe to leave empty
+          attemptNo: 1
+        })
       }
 
       return deleteArtifactInternal(artifactName)

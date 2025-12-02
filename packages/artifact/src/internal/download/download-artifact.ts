@@ -15,7 +15,10 @@ import {
   Int64Value,
   ListArtifactsRequest
 } from '../../generated'
-import {getBackendIdsFromToken} from '../shared/util'
+import {
+  BackendIds,
+  getBackendIdsFromTokenOrOverride
+} from '../shared/util'
 import {ArtifactNotFoundError} from '../shared/errors'
 
 const scrubQueryParameters = (url: string): string => {
@@ -151,14 +154,15 @@ export async function downloadArtifactPublic(
 
 export async function downloadArtifactInternal(
   artifactId: number,
-  options?: DownloadArtifactOptions
+  options?: DownloadArtifactOptions,
+  override?: BackendIds,
 ): Promise<DownloadArtifactResponse> {
   const downloadPath = await resolveOrCreateDirectory(options?.path)
 
   const artifactClient = internalArtifactTwirpClient()
 
   const {publicRunId, attemptNo, workflowRunBackendId, workflowJobRunBackendId} =
-    getBackendIdsFromToken()
+    getBackendIdsFromTokenOrOverride(override)
 
   const listReq: ListArtifactsRequest = {
     runId: publicRunId,

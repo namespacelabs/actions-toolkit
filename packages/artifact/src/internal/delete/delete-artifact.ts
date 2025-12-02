@@ -8,7 +8,10 @@ import {requestLog} from '@octokit/plugin-request-log'
 import {retry} from '@octokit/plugin-retry'
 import {OctokitOptions} from '@octokit/core/dist-types/types'
 import {internalArtifactTwirpClient} from '../shared/artifact-twirp-client'
-import {getBackendIdsFromToken} from '../shared/util'
+import {
+  BackendIds,
+  getBackendIdsFromTokenOrOverride
+} from '../shared/util'
 import {
   DeleteArtifactRequest,
   ListArtifactsRequest,
@@ -62,12 +65,13 @@ export async function deleteArtifactPublic(
 }
 
 export async function deleteArtifactInternal(
-  artifactName
+  artifactName,
+  override?: BackendIds,
 ): Promise<DeleteArtifactResponse> {
   const artifactClient = internalArtifactTwirpClient()
 
   const {publicRunId, attemptNo, workflowRunBackendId, workflowJobRunBackendId} =
-    getBackendIdsFromToken()
+    getBackendIdsFromTokenOrOverride(override)
 
   const listReq: ListArtifactsRequest = {
     runId: publicRunId,
