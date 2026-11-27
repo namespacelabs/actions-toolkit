@@ -141,6 +141,52 @@ async function createStreamingArchiverZip(
   return Buffer.concat(chunks)
 }
 
+// A stored zip written by hand, for names, flags and CRCs archiver will not
+// produce. No data descriptors.
+function rawStoreZip(
+  entries: {name: Buffer; data: Buffer; flags?: number; crc?: number}[]
+): Buffer {
+  const crc32 = (
+    zlib as unknown as {crc32: (d: Uint8Array, v?: number) => number}
+  ).crc32
+  const parts: Buffer[] = []
+  const cds: Buffer[] = []
+  let off = 0
+  for (const e of entries) {
+    const crc = e.crc ?? crc32(e.data)
+    const flags = e.flags ?? 0
+    const lfh = Buffer.alloc(30)
+    lfh.writeUInt32LE(0x04034b50, 0)
+    lfh.writeUInt16LE(20, 4)
+    lfh.writeUInt16LE(flags, 6)
+    lfh.writeUInt32LE(crc, 14)
+    lfh.writeUInt32LE(e.data.length, 18)
+    lfh.writeUInt32LE(e.data.length, 22)
+    lfh.writeUInt16LE(e.name.length, 26)
+    const cd = Buffer.alloc(46)
+    cd.writeUInt32LE(0x02014b50, 0)
+    cd.writeUInt16LE(20, 4)
+    cd.writeUInt16LE(20, 6)
+    cd.writeUInt16LE(flags, 8)
+    cd.writeUInt32LE(crc, 16)
+    cd.writeUInt32LE(e.data.length, 20)
+    cd.writeUInt32LE(e.data.length, 24)
+    cd.writeUInt16LE(e.name.length, 28)
+    cd.writeUInt32LE(off, 42)
+    parts.push(lfh, e.name, e.data)
+    cds.push(cd, e.name)
+    off += 30 + e.name.length + e.data.length
+  }
+  const cdBuf = Buffer.concat(cds)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(entries.length, 8)
+  eocd.writeUInt16LE(entries.length, 10)
+  eocd.writeUInt32LE(cdBuf.length, 12)
+  eocd.writeUInt32LE(off, 16)
+  return Buffer.concat([...parts, cdBuf, eocd])
+}
+
 // One stored entry of four slices plus a small one, served with ranges.
 async function bigStoreZip(): Promise<{zip: Buffer; payload: Buffer}> {
   const payload = crypto.randomBytes(4 * CHUNK)
@@ -546,6 +592,120 @@ describe('range-extract', () => {
 
     try {
       expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('leaves CP437 names to the streaming extractor', async () => {
+    // 0xff is a plain space to unzip-stream and U+00A0 to yauzl.
+    const zip = rawStoreZip([
+      {
+        name: Buffer.from([0x72, 0x65, 0xff, 0x2e, 0x69, 0x73, 0x6f]),
+        data: crypto.randomBytes(2 * CHUNK)
+      }
+    ])
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-cp437')
+
+    try {
+      expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('fails without streaming again when the archive itself has a bad CRC-32', async () => {
+    const zip = rawStoreZip([
+      {
+        name: Buffer.from('release/test.iso'),
+        data: crypto.randomBytes(2 * CHUNK),
+        crc: 0x12345678
+      }
+    ])
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-bad-crc')
+
+    try {
+      await expect(
+        streamExtractExternal(srv.url, outDir, fastOptions)
+      ).rejects.toThrow(/CRC-32/)
+      // One probe, one local header, two slices; no full GET afterwards.
+      expect(srv.requests.every(r => r.range !== undefined)).toBe(true)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('follows a redirect on a data range', async () => {
+    const {zip, payload} = await bigStoreZip()
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res) => {
+        if (end - start + 1 === CHUNK && res.req.url === '/artifact.zip') {
+          res.writeHead(307, {Location: '/blob'})
+          res.end()
+          return true
+        }
+      }
+    })
+    const outDir = await newOutDir('out-slice-redirect')
+
+    try {
+      expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(true)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDir, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('rejects ranges from a different version of the object', async () => {
+    const {zip, payload} = await bigStoreZip()
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        const etag = end === buf.length - 1 ? '"v1"' : '"v2"'
+        res.setHeader('ETag', etag)
+        sendRange(res, buf, start, end)
+        return true
+      }
+    })
+    const outDir = await newOutDir('out-etag')
+
+    try {
+      await expect(
+        tryRangeExtract(srv.url, outDir, fastOptions)
+      ).rejects.toThrow(/ETag/)
+      await streamExtractExternal(srv.url, outDir, fastOptions)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDir, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('ignores options that are not positive numbers', async () => {
+    const {zip, payload} = await bigStoreZip()
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-nan')
+
+    try {
+      expect(
+        await tryRangeExtract(srv.url, outDir, {
+          ...fastOptions,
+          concurrency: NaN
+        })
+      ).toBe(true)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDir, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
     } finally {
       await srv.close()
     }

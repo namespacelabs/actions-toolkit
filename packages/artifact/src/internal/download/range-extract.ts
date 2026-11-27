@@ -12,6 +12,7 @@ import {getUserAgentString} from '../shared/user-agent'
 // serves its first read from memory.
 const TAIL_PROBE_BYTES = 22 + 0xffff + 20
 const MAX_REDIRECTS = 10
+const REDIRECT_STATUSES = [301, 302, 303, 307, 308]
 const MAX_SLICE_ATTEMPTS = 3
 
 export const DEFAULT_CONCURRENCY = 8
@@ -30,6 +31,15 @@ export interface RangeExtractOptions {
   minArchiveSize?: number
   maxEntries?: number
   idleTimeoutMs?: number
+}
+
+// The downloaded bytes do not match the archive's own CRC-32. Streaming the
+// same object again would write the same bytes without checking them.
+export class ArtifactIntegrityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ArtifactIntegrityError'
+  }
 }
 
 type Crc32 = (data: Uint8Array, value?: number) => number
@@ -118,6 +128,15 @@ export function crc32Combine(crc1: number, crc2: number, len2: number): number {
   return (multModP(p, crc1) ^ crc2) >>> 0
 }
 
+// True when unzip-stream would decode this entry's name to the same string.
+// It reads names from local headers and maps CP437 differently, so only
+// ASCII or UTF-8-flagged names without a Unicode Path field (0x7075) agree.
+function namedLikeStreaming(entry: yauzl.Entry): boolean {
+  const utf8 = (entry.generalPurposeBitFlag & 0x800) !== 0
+  const ascii = entry.fileNameRaw.every(b => b < 0x80)
+  return (utf8 || ascii) && !entry.extraFields.some(f => f.id === 0x7075)
+}
+
 function hasProxyEnv(url: string): boolean {
   const proxy = url.startsWith('https:')
     ? process.env['HTTPS_PROXY'] || process.env['https_proxy']
@@ -125,81 +144,162 @@ function hasProxyEnv(url: string): boolean {
   return Boolean(proxy && proxy.trim().length > 0)
 }
 
-interface RangeRequest {
-  url: string
-  start: number
-  end: number // exclusive
-  total: number
-  idleTimeoutMs: number
-  signal?: AbortSignal
+function positive(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) && value >= 1
+    ? Math.floor(value)
+    : fallback
 }
 
-// Yields the bytes of one range. It fails unless the server answers 206 with
-// exactly the requested Content-Range of an object of the probed size, and
-// it aborts when no data arrives for idleTimeoutMs.
-async function* rangeBody(req: RangeRequest): AsyncGenerator<Buffer> {
-  const range = `bytes=${req.start}-${req.end - 1}`
-  const controller = new AbortController()
-  const onAbort = (): void => controller.abort(req.signal?.reason)
-  if (req.signal?.aborted) throw req.signal.reason
-  req.signal?.addEventListener('abort', onAbort, {once: true})
-  const timer = setTimeout(
-    () =>
-      controller.abort(
-        new Error(`No data for ${req.idleTimeoutMs} ms on range ${range}`)
-      ),
-    req.idleTimeoutMs
-  )
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
-  try {
-    const res = await fetch(req.url, {
+// An abort signal that also fires when no data arrives for idleMs. The
+// timer runs only while waiting on the network, so time the consumer
+// spends writing does not count against it.
+class IdleAbort {
+  private readonly controller = new AbortController()
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private readonly onParentAbort = (): void =>
+    this.controller.abort(this.parent?.reason)
+
+  constructor(
+    private readonly idleMs: number,
+    private readonly what: string,
+    private readonly parent?: AbortSignal
+  ) {
+    if (parent?.aborted) this.controller.abort(parent.reason)
+    parent?.addEventListener('abort', this.onParentAbort, {once: true})
+    this.touch()
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal
+  }
+
+  touch(): void {
+    this.pause()
+    this.timer = setTimeout(
+      () =>
+        this.controller.abort(
+          new Error(`No data for ${this.idleMs} ms on ${this.what}`)
+        ),
+      this.idleMs
+    )
+  }
+
+  pause(): void {
+    clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
+  dispose(): void {
+    this.pause()
+    this.parent?.removeEventListener('abort', this.onParentAbort)
+  }
+}
+
+// GET with a Range header. It follows redirects itself so that a downgrade
+// from HTTPS is refused before anything is sent, and returns the URL it
+// ended at. Errors name the range, never the URL: it carries a signature.
+async function fetchRange(
+  url: string,
+  range: string,
+  signal: AbortSignal
+): Promise<{res: Response; url: string}> {
+  let current = url
+  for (let hops = 0; ; hops++) {
+    const res = await fetch(current, {
       headers: {Range: range, 'User-Agent': getUserAgentString()},
-      redirect: 'error',
-      signal: controller.signal
+      redirect: 'manual',
+      signal
     })
-    reader = res.body?.getReader()
+    if (!REDIRECT_STATUSES.includes(res.status)) return {res, url: current}
+    await res.body?.cancel()
+    const location = res.headers.get('location')
+    const next = location ? redirectTarget(current, location) : null
+    if (!next || hops >= MAX_REDIRECTS) {
+      throw new Error(`Refused redirect for range ${range}`)
+    }
+    current = next
+  }
+}
+
+// Yields exactly `want` bytes of a response body and fails on more or less.
+async function* exactBody(
+  res: Response,
+  want: number,
+  idle: IdleAbort,
+  what: string
+): AsyncGenerator<Buffer> {
+  if (!res.body) throw new Error(`Empty body for ${what}`)
+  const reader = res.body.getReader()
+  let finished = false
+  try {
+    let received = 0
+    for (;;) {
+      idle.touch()
+      const {done, value} = await reader.read()
+      idle.pause()
+      if (done) break
+      received += value.byteLength
+      if (received > want) {
+        throw new Error(`${what} returned more than ${want} bytes`)
+      }
+      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+    }
+    if (received !== want) {
+      throw new Error(`${what} returned ${received} of ${want} bytes`)
+    }
+    finished = true
+  } finally {
+    if (!finished) await reader.cancel().catch(() => {})
+  }
+}
+
+// The object the probe saw. Every later range must come from the same one.
+interface ArchiveObject {
+  url: string
+  total: number
+  etag: string | null
+}
+
+// Yields the bytes [start, end) of the archive. It fails unless the server
+// answers 206 with exactly that Content-Range of the probed object.
+async function* rangeBody(
+  obj: ArchiveObject,
+  start: number,
+  end: number,
+  idleTimeoutMs: number,
+  signal?: AbortSignal
+): AsyncGenerator<Buffer> {
+  const range = `bytes=${start}-${end - 1}`
+  const idle = new IdleAbort(idleTimeoutMs, `range ${range}`, signal)
+  try {
+    const {res} = await fetchRange(obj.url, range, idle.signal)
     const header = res.headers.get('content-range')
     const cr = parseContentRange(header)
     if (
       res.status !== 206 ||
       !cr ||
-      cr.start !== req.start ||
-      cr.end !== req.end - 1 ||
-      cr.total !== req.total
+      cr.start !== start ||
+      cr.end !== end - 1 ||
+      cr.total !== obj.total
     ) {
+      await res.body?.cancel()
       throw new Error(
         `Unexpected response for range ${range}: HTTP ${res.status}, Content-Range ${header}`
       )
     }
-    if (!reader) throw new Error(`Empty body for range ${range}`)
-
-    const want = req.end - req.start
-    let received = 0
-    for (;;) {
-      timer.refresh()
-      const {done, value} = await reader.read()
-      if (done) break
-      received += value.byteLength
-      if (received > want) {
-        throw new Error(`Range ${range} returned more than ${want} bytes`)
-      }
-      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+    if (obj.etag !== null && res.headers.get('etag') !== obj.etag) {
+      await res.body?.cancel()
+      throw new Error(`ETag changed for range ${range}`)
     }
-    if (received !== want) {
-      throw new Error(`Range ${range} returned ${received} of ${want} bytes`)
-    }
-    reader = undefined
+    yield* exactBody(res, end - start, idle, `range ${range}`)
   } finally {
-    clearTimeout(timer)
-    req.signal?.removeEventListener('abort', onAbort)
-    if (reader) await reader.cancel().catch(() => {})
+    idle.dispose()
   }
 }
 
 class HttpRangeReader extends yauzl.RandomAccessReader {
   constructor(
-    private readonly url: string,
-    private readonly total: number,
+    private readonly obj: ArchiveObject,
     private readonly tailStart: number,
     private readonly tail: Buffer,
     private readonly idleTimeoutMs: number
@@ -213,16 +313,14 @@ class HttpRangeReader extends yauzl.RandomAccessReader {
         this.tail.subarray(start - this.tailStart, end - this.tailStart)
       ])
     }
-    return Readable.from(
-      rangeBody({
-        url: this.url,
-        start,
-        end,
-        total: this.total,
-        idleTimeoutMs: this.idleTimeoutMs
-      }),
+    // Destroying the stream must cancel a request that is still waiting.
+    const stop = new AbortController()
+    const stream = Readable.from(
+      rangeBody(this.obj, start, end, this.idleTimeoutMs, stop.signal),
       {objectMode: false}
     )
+    stream.once('close', () => stop.abort(new Error('Range stream closed')))
+    return stream
   }
 }
 
@@ -253,8 +351,7 @@ interface Slice {
 
 // Downloads one slice into fh through buf and returns its CRC-32.
 async function downloadSlice(
-  url: string,
-  total: number,
+  obj: ArchiveObject,
   fh: fs.promises.FileHandle,
   slice: Slice,
   buf: Buffer,
@@ -266,14 +363,13 @@ async function downloadSlice(
       let crc = 0
       let pos = 0
       let writeOff = slice.dstOffset
-      for await (const chunk of rangeBody({
-        url,
-        start: slice.srcStart,
-        end: slice.srcStart + slice.len,
-        total,
+      for await (const chunk of rangeBody(
+        obj,
+        slice.srcStart,
+        slice.srcStart + slice.len,
         idleTimeoutMs,
         signal
-      })) {
+      )) {
         crc = (crc32 as Crc32)(chunk, crc)
         let off = 0
         while (off < chunk.length) {
@@ -301,8 +397,7 @@ async function downloadSlice(
 }
 
 interface StoreEntryJob {
-  url: string
-  total: number
+  obj: ArchiveObject
   dataStart: number
   size: number
   expectedCrc: number
@@ -324,7 +419,7 @@ async function extractStoreParallel(
       len: Math.min(chunkSize, job.size - off)
     })
   }
-  const crcs = new Array<number>(slices.length)
+  const crcs: (number | undefined)[] = slices.map(() => undefined)
   // The first failure stops every other lane before the file is closed.
   const controller = new AbortController()
 
@@ -338,8 +433,7 @@ async function extractStoreParallel(
         const i = next++
         try {
           crcs[i] = await downloadSlice(
-            job.url,
-            job.total,
+            job.obj,
             fh,
             slices[i],
             buf,
@@ -364,11 +458,12 @@ async function extractStoreParallel(
   }
 
   let crc = 0
-  for (let i = 0; i < slices.length; i++) {
-    crc = crc32Combine(crc, crcs[i], slices[i].len)
+  for (const [i, sliceCrc] of crcs.entries()) {
+    if (sliceCrc === undefined) throw new Error(`Slice ${i} was not fetched`)
+    crc = crc32Combine(crc, sliceCrc, slices[i].len)
   }
   if (crc !== job.expectedCrc) {
-    throw new Error(`CRC-32 mismatch for ${job.destPath}`)
+    throw new ArtifactIntegrityError(`CRC-32 mismatch for ${job.destPath}`)
   }
 }
 
@@ -387,52 +482,56 @@ async function extractStreamed(
   const readStream = await zipfile.openReadStreamPromise(entry)
   await pipeline(readStream, tap, fs.createWriteStream(destPath))
   if (crc >>> 0 !== entry.crc32) {
-    throw new Error(`CRC-32 mismatch for ${destPath}`)
+    throw new ArtifactIntegrityError(`CRC-32 mismatch for ${destPath}`)
   }
 }
 
-// Fetches the archive tail with one suffix Range GET. It follows redirects
-// itself so that a downgrade from HTTPS is refused before it is requested.
+// Fetches the archive tail with one suffix Range GET. A response that is
+// not exactly that suffix is refused before its body is read.
 async function probeTail(
   url: string,
   idleTimeoutMs: number
-): Promise<{url: string; start: number; total: number; tail: Buffer} | null> {
-  let current = url
-  for (let i = 0; i <= MAX_REDIRECTS; i++) {
-    const res = await fetch(current, {
-      headers: {
-        Range: `bytes=-${TAIL_PROBE_BYTES}`,
-        'User-Agent': getUserAgentString()
-      },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(idleTimeoutMs)
-    })
-    if ([301, 302, 303, 307, 308].includes(res.status)) {
-      await res.body?.cancel()
-      const location = res.headers.get('location')
-      const next = location ? redirectTarget(current, location) : null
-      if (!next) return null
-      current = next
-      continue
-    }
+): Promise<{obj: ArchiveObject; start: number; tail: Buffer} | null> {
+  const what = 'the archive tail'
+  const idle = new IdleAbort(idleTimeoutMs, what)
+  try {
+    const {res, url: finalUrl} = await fetchRange(
+      url,
+      `bytes=-${TAIL_PROBE_BYTES}`,
+      idle.signal
+    )
     const cr = parseContentRange(res.headers.get('content-range'))
-    if (res.status !== 206 || !cr || cr.end !== cr.total - 1) {
+    const want = cr ? cr.end - cr.start + 1 : 0
+    if (
+      res.status !== 206 ||
+      !cr ||
+      cr.end !== cr.total - 1 ||
+      want !== Math.min(TAIL_PROBE_BYTES, cr.total)
+    ) {
       await res.body?.cancel()
       return null
     }
-    const tail = Buffer.from(await res.arrayBuffer())
-    if (tail.length !== cr.end - cr.start + 1) return null
-    return {url: current, start: cr.start, total: cr.total, tail}
+    const chunks: Buffer[] = []
+    for await (const chunk of exactBody(res, want, idle, what)) {
+      chunks.push(chunk)
+    }
+    return {
+      obj: {url: finalUrl, total: cr.total, etag: res.headers.get('etag')},
+      start: cr.start,
+      tail: Buffer.concat(chunks)
+    }
+  } finally {
+    idle.dispose()
   }
-  return null
 }
 
 /**
  * Extracts a zip artifact with parallel HTTP Range requests when it holds a
  * few entries and at least one large stored one, such as a disk image.
  * Returns false, having written nothing, when the server or the archive does
- * not qualify, so the caller streams it instead. Throws when a download
- * that already started fails; the caller then streams it as well.
+ * not qualify, so the caller streams it instead. Throws when a download that
+ * already started fails. The caller then streams it as well, except after
+ * an ArtifactIntegrityError.
  */
 export async function tryRangeExtract(
   url: string,
@@ -441,15 +540,21 @@ export async function tryRangeExtract(
 ): Promise<boolean> {
   if (hasProxyEnv(url) || !crc32) return false
 
-  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY)
-  const chunkSize = Math.max(64 * 1024, options.chunkSize ?? DEFAULT_CHUNK_SIZE)
+  const concurrency = positive(options.concurrency, DEFAULT_CONCURRENCY)
+  const chunkSize = Math.max(
+    64 * 1024,
+    positive(options.chunkSize, DEFAULT_CHUNK_SIZE)
+  )
   const writeBufferSize = Math.max(
     64 * 1024,
-    options.writeBufferSize ?? DEFAULT_WRITE_BUFFER_SIZE
+    positive(options.writeBufferSize, DEFAULT_WRITE_BUFFER_SIZE)
   )
-  const minArchiveSize = options.minArchiveSize ?? DEFAULT_MIN_ARCHIVE_SIZE
-  const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES
-  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  const minArchiveSize = Math.max(
+    0,
+    options.minArchiveSize ?? DEFAULT_MIN_ARCHIVE_SIZE
+  )
+  const maxEntries = positive(options.maxEntries, DEFAULT_MAX_ENTRIES)
+  const idleTimeoutMs = positive(options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS)
   const isLargeStore = (entry: yauzl.Entry): boolean =>
     entry.compressionMethod === 0 && entry.uncompressedSize >= minArchiveSize
 
@@ -460,26 +565,35 @@ export async function tryRangeExtract(
     const entries: yauzl.Entry[] = []
     try {
       probe = await probeTail(url, idleTimeoutMs)
-      if (!probe || probe.total < minArchiveSize) return false
+      if (!probe || probe.obj.total < minArchiveSize) return false
 
       const reader = new HttpRangeReader(
-        probe.url,
-        probe.total,
+        probe.obj,
         probe.start,
         probe.tail,
         idleTimeoutMs
       )
-      zipfile = await yauzl.fromRandomAccessReaderPromise(reader, probe.total, {
-        lazyEntries: true,
-        autoClose: false,
-        // Reject backslashes instead of turning them into directories,
-        // which the streaming extractor does not do.
-        strictFileNames: true
-      })
+      zipfile = await yauzl.fromRandomAccessReaderPromise(
+        reader,
+        probe.obj.total,
+        {
+          lazyEntries: true,
+          autoClose: false,
+          // Reject backslashes instead of turning them into directories,
+          // which the streaming extractor does not do.
+          strictFileNames: true
+        }
+      )
       if (zipfile.entryCount > maxEntries) return false
 
       for await (const entry of zipfile.eachEntry()) {
-        if (entry.isEncrypted() || !entry.canDecodeFileData()) return false
+        if (
+          entry.isEncrypted() ||
+          !entry.canDecodeFileData() ||
+          !namedLikeStreaming(entry)
+        ) {
+          return false
+        }
         resolveSafePath(directory, entry.fileName)
         entries.push(entry)
       }
@@ -491,7 +605,7 @@ export async function tryRangeExtract(
 
     // Extract. A failure here is an error the caller recovers from.
     core.debug(
-      `Using parallel range extraction (${entries.length} entries, ${probe.total} bytes, concurrency=${concurrency})`
+      `Using parallel range extraction (${entries.length} entries, ${probe.obj.total} bytes, concurrency=${concurrency})`
     )
     for (const entry of entries) {
       const destPath = resolveSafePath(directory, entry.fileName)
@@ -508,8 +622,7 @@ export async function tryRangeExtract(
         )
         await extractStoreParallel(
           {
-            url: probe.url,
-            total: probe.total,
+            obj: probe.obj,
             dataStart: fileDataStart,
             size: entry.uncompressedSize,
             expectedCrc: entry.crc32,

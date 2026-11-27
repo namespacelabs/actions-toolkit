@@ -3,7 +3,11 @@ import * as github from '@actions/github'
 import * as core from '@actions/core'
 import * as httpClient from '@actions/http-client'
 import unzip from 'unzip-stream'
-import {RangeExtractOptions, tryRangeExtract} from './range-extract'
+import {
+  ArtifactIntegrityError,
+  RangeExtractOptions,
+  tryRangeExtract
+} from './range-extract'
 import {
   DownloadArtifactOptions,
   DownloadArtifactResponse
@@ -70,6 +74,8 @@ export async function streamExtractExternal(
       return
     }
   } catch (error) {
+    // unzip-stream does not check CRC-32, so it would write the same bytes.
+    if (error instanceof ArtifactIntegrityError) throw error
     core.warning(
       `Parallel range download failed, downloading as one stream instead: ${error.message}`
     )
