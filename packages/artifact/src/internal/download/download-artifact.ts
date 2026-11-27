@@ -3,7 +3,7 @@ import * as github from '@actions/github'
 import * as core from '@actions/core'
 import * as httpClient from '@actions/http-client'
 import unzip from 'unzip-stream'
-import {tryRangeExtract} from './range-extract'
+import {RangeExtractOptions, tryRangeExtract} from './range-extract'
 import {
   DownloadArtifactOptions,
   DownloadArtifactResponse
@@ -62,10 +62,17 @@ async function streamExtract(url: string, directory: string): Promise<void> {
 
 export async function streamExtractExternal(
   url: string,
-  directory: string
+  directory: string,
+  rangeOptions?: RangeExtractOptions
 ): Promise<void> {
-  if (await tryRangeExtract(url, directory)) {
-    return
+  try {
+    if (await tryRangeExtract(url, directory, rangeOptions)) {
+      return
+    }
+  } catch (error) {
+    core.warning(
+      `Parallel range download failed, downloading as one stream instead: ${error.message}`
+    )
   }
 
   const client = new httpClient.HttpClient(getUserAgentString())

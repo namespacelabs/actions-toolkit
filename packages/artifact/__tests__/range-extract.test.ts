@@ -3,9 +3,12 @@ import * as fs from 'fs'
 import * as http from 'http'
 import {AddressInfo} from 'net'
 import * as path from 'path'
+import * as zlib from 'zlib'
 import archiver from 'archiver'
 import {
+  crc32Combine,
   parseContentRange,
+  redirectTarget,
   resolveSafePath,
   tryRangeExtract
 } from '../src/internal/download/range-extract'
@@ -13,6 +16,7 @@ import {streamExtractExternal} from '../src/internal/download/download-artifact'
 import {noopLogs} from './common'
 
 const testDir = path.join(__dirname, '_temp', 'range-extract')
+const CHUNK = 512 * 1024
 
 interface TestServerHandle {
   url: string
@@ -20,9 +24,39 @@ interface TestServerHandle {
   close: () => Promise<void>
 }
 
+interface TestServerOptions {
+  supportRange?: boolean
+  redirectOnce?: boolean
+  // Called for every satisfiable range request. Return true when it wrote
+  // the response itself.
+  onRange?: (
+    start: number,
+    end: number,
+    res: http.ServerResponse,
+    zip: Buffer
+  ) => boolean | void
+}
+
+function sendRange(
+  res: http.ServerResponse,
+  zip: Buffer,
+  start: number,
+  end: number,
+  body?: Buffer
+): void {
+  const slice = body ?? zip.subarray(start, end + 1)
+  res.writeHead(206, {
+    'Content-Type': 'application/zip',
+    'Accept-Ranges': 'bytes',
+    'Content-Range': `bytes ${start}-${end}/${zip.length}`,
+    'Content-Length': String(slice.length)
+  })
+  res.end(slice)
+}
+
 async function startZipServer(
-  zipBuffer: Buffer,
-  options: {supportRange?: boolean; redirectOnce?: boolean} = {}
+  zip: Buffer,
+  options: TestServerOptions = {}
 ): Promise<TestServerHandle> {
   const supportRange = options.supportRange ?? true
   const redirectOnce = options.redirectOnce ?? false
@@ -47,30 +81,24 @@ async function startZipServer(
       const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHdr.trim())
       if (m) {
         let start = 0
-        let end = zipBuffer.length - 1
+        let end = zip.length - 1
         if (m[1] === '' && m[2] !== '') {
-          start = Math.max(0, zipBuffer.length - Number(m[2]))
+          start = Math.max(0, zip.length - Number(m[2]))
         } else {
           start = Number(m[1])
-          if (m[2] !== '') end = Math.min(zipBuffer.length - 1, Number(m[2]))
+          if (m[2] !== '') end = Math.min(zip.length - 1, Number(m[2]))
         }
-        const slice = zipBuffer.subarray(start, end + 1)
-        res.writeHead(206, {
-          'Content-Type': 'application/zip',
-          'Accept-Ranges': 'bytes',
-          'Content-Range': `bytes ${start}-${end}/${zipBuffer.length}`,
-          'Content-Length': String(slice.length)
-        })
-        res.end(slice)
+        if (options.onRange?.(start, end, res, zip)) return
+        sendRange(res, zip, start, end)
         return
       }
     }
 
     res.writeHead(200, {
       'Content-Type': 'application/zip',
-      'Content-Length': String(zipBuffer.length)
+      'Content-Length': String(zip.length)
     })
-    res.end(zipBuffer)
+    res.end(zip)
   })
 
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -81,7 +109,10 @@ async function startZipServer(
     }`,
     requests,
     close: async () =>
-      new Promise<void>(resolve => server.close(() => resolve()))
+      new Promise<void>(resolve => {
+        server.closeAllConnections()
+        server.close(() => resolve())
+      })
   }
 }
 
@@ -96,8 +127,8 @@ async function createStreamingArchiverZip(
   const chunks: Buffer[] = []
   zip.on('data', (c: Buffer) => chunks.push(c))
 
-  for (const f of files) {
-    const srcPath = path.join(srcDir, `${path.basename(f.name)}.bin`)
+  for (const [i, f] of files.entries()) {
+    const srcPath = path.join(srcDir, `${i}.bin`)
     await fs.promises.writeFile(srcPath, f.content)
     zip.append(fs.createReadStream(srcPath), {name: f.name})
   }
@@ -108,6 +139,33 @@ async function createStreamingArchiverZip(
     zip.finalize()
   })
   return Buffer.concat(chunks)
+}
+
+// One stored entry of four slices plus a small one, served with ranges.
+async function bigStoreZip(): Promise<{zip: Buffer; payload: Buffer}> {
+  const payload = crypto.randomBytes(4 * CHUNK)
+  const zip = await createStreamingArchiverZip(
+    [
+      {name: 'release/test.iso', content: payload},
+      {name: 'release/SHA256SUMS', content: Buffer.from('sums\n')}
+    ],
+    0
+  )
+  return {zip, payload}
+}
+
+const fastOptions = {
+  minArchiveSize: CHUNK,
+  chunkSize: CHUNK,
+  writeBufferSize: 128 * 1024,
+  concurrency: 4,
+  idleTimeoutMs: 1000
+}
+
+async function newOutDir(name: string): Promise<string> {
+  const dir = path.join(testDir, name)
+  await fs.promises.mkdir(dir, {recursive: true})
+  return dir
 }
 
 describe('range-extract', () => {
@@ -135,20 +193,14 @@ describe('range-extract', () => {
     expect(zipBuf.readUInt16LE(6) & 0x08).toBe(0x08)
     expect(zipBuf.readUInt16LE(8)).toBe(0)
 
-    const srv = await startZipServer(zipBuf, {supportRange: true})
-    const outDir = path.join(testDir, 'out-store')
-    await fs.promises.mkdir(outDir, {recursive: true})
+    const srv = await startZipServer(zipBuf)
+    const outDir = await newOutDir('out-store')
 
     try {
-      const handled = await tryRangeExtract(srv.url, outDir, {
-        minArchiveSize: 0,
-        chunkSize: 512 * 1024,
-        writeBufferSize: 256 * 1024,
-        concurrency: 4
-      })
+      const handled = await tryRangeExtract(srv.url, outDir, fastOptions)
       expect(handled).toBe(true)
       expect(srv.requests.some(r => r.method === 'HEAD')).toBe(false)
-      expect(srv.requests[0].range).toBe('bytes=-65536')
+      expect(srv.requests[0].range).toBe('bytes=-65577')
 
       expect(
         (
@@ -168,21 +220,17 @@ describe('range-extract', () => {
   })
 
   it('follows 302 redirects on STORE archives and falls back for DEFLATE-only archives', async () => {
-    const storePayload = Buffer.from('omarchy-redirect-data-'.repeat(20000))
+    const storePayload = Buffer.from('omarchy-redirect-data-'.repeat(40000))
     const storeZip = await createStreamingArchiverZip(
       [{name: 'nested/a.bin', content: storePayload}],
       0
     )
-    const redirectSrv = await startZipServer(storeZip, {
-      supportRange: true,
-      redirectOnce: true
-    })
-    const outStore = path.join(testDir, 'out-redirect')
-    await fs.promises.mkdir(outStore, {recursive: true})
+    const redirectSrv = await startZipServer(storeZip, {redirectOnce: true})
+    const outStore = await newOutDir('out-redirect')
 
     try {
       const handled = await tryRangeExtract(redirectSrv.url, outStore, {
-        minArchiveSize: 0,
+        ...fastOptions,
         concurrency: 2
       })
       expect(handled).toBe(true)
@@ -200,9 +248,8 @@ describe('range-extract', () => {
       [{name: 'nested/b.txt', content: deflatePayload}],
       6
     )
-    const deflateSrv = await startZipServer(deflateZip, {supportRange: true})
-    const outDeflate = path.join(testDir, 'out-deflate')
-    await fs.promises.mkdir(outDeflate, {recursive: true})
+    const deflateSrv = await startZipServer(deflateZip)
+    const outDeflate = await newOutDir('out-deflate')
 
     try {
       expect(
@@ -219,7 +266,7 @@ describe('range-extract', () => {
     }
   })
 
-  it('rejects Zip Slip traversal paths (including evil.zip)', async () => {
+  it('leaves Zip Slip paths to the streaming extractor, which neutralises them', async () => {
     expect(() => resolveSafePath('/tmp/dest', '../etc/passwd')).toThrow(
       /Unsafe zip entry path/
     )
@@ -233,14 +280,17 @@ describe('range-extract', () => {
     const evilZip = await fs.promises.readFile(
       path.join(__dirname, 'fixtures', 'evil.zip')
     )
-    const srv = await startZipServer(evilZip, {supportRange: true})
-    const outDir = path.join(testDir, 'out-evil')
-    await fs.promises.mkdir(outDir, {recursive: true})
+    const srv = await startZipServer(evilZip)
+    const outDir = await newOutDir('out-evil')
 
     try {
-      await expect(
-        tryRangeExtract(srv.url, outDir, {minArchiveSize: 0})
-      ).rejects.toThrow()
+      expect(await tryRangeExtract(srv.url, outDir, {minArchiveSize: 0})).toBe(
+        false
+      )
+      await streamExtractExternal(srv.url, outDir)
+      const written = await fs.promises.readdir(outDir, {recursive: true})
+      expect(written.length).toBeGreaterThan(0)
+      expect(fs.existsSync(path.join(testDir, 'etc'))).toBe(false)
     } finally {
       await srv.close()
     }
@@ -252,8 +302,7 @@ describe('range-extract', () => {
       0
     )
     const srv = await startZipServer(zipBuf, {supportRange: false})
-    const outDir = path.join(testDir, 'out-fallback')
-    await fs.promises.mkdir(outDir, {recursive: true})
+    const outDir = await newOutDir('out-fallback')
 
     try {
       expect(await tryRangeExtract(srv.url, outDir, {minArchiveSize: 0})).toBe(
@@ -276,5 +325,266 @@ describe('range-extract', () => {
     })
     expect(parseContentRange('bytes */100')).toBeNull()
     expect(parseContentRange(null)).toBeNull()
+  })
+
+  it('declines archives with many entries before reading their central directory', async () => {
+    const files = [
+      {name: 'release/test.iso', content: crypto.randomBytes(2 * CHUNK)}
+    ]
+    for (let i = 0; i < 2000; i++) {
+      files.push({
+        name: `reports/junit/suite-${String(i).padStart(6, '0')}.xml`,
+        content: Buffer.from(`<testsuite id="${i}"/>\n`)
+      })
+    }
+    const zip = await createStreamingArchiverZip(files, 0)
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-many')
+
+    try {
+      expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(false)
+      expect(srv.requests.length).toBe(1)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('rejects a slice whose Content-Range is not the one requested', async () => {
+    const {zip, payload} = await bigStoreZip()
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        // A confused cache answers with the previous slice and its own header.
+        if (end - start + 1 === CHUNK && start >= CHUNK) {
+          sendRange(res, buf, start - CHUNK, end - CHUNK)
+          return true
+        }
+      }
+    })
+    const outDir = await newOutDir('out-wrong-range')
+
+    try {
+      await expect(
+        tryRangeExtract(srv.url, outDir, fastOptions)
+      ).rejects.toThrow(/Content-Range/)
+      await streamExtractExternal(srv.url, outDir, fastOptions)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDir, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('detects corrupted slice bytes with the entry CRC-32', async () => {
+    const {zip} = await bigStoreZip()
+    let flipped = false
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (!flipped && end - start + 1 === CHUNK) {
+          flipped = true
+          const body = Buffer.from(buf.subarray(start, end + 1))
+          body[100] ^= 0xff
+          sendRange(res, buf, start, end, body)
+          return true
+        }
+      }
+    })
+    const outDir = await newOutDir('out-crc')
+
+    try {
+      await expect(
+        tryRangeExtract(srv.url, outDir, fastOptions)
+      ).rejects.toThrow(/CRC-32/)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('falls back to one stream when a data range is answered with 200', async () => {
+    // Default options, so the archive must exceed the 16 MiB defaults.
+    const slice = 16 * 1024 * 1024
+    const payload = crypto.randomBytes(2 * slice)
+    const zip = await createStreamingArchiverZip(
+      [{name: 'release/test.iso', content: payload}],
+      0
+    )
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (end - start + 1 === slice) {
+          res.writeHead(200, {'Content-Length': String(buf.length)})
+          res.end(buf)
+          return true
+        }
+      }
+    })
+    const outDir = await newOutDir('out-200')
+
+    try {
+      await streamExtractExternal(srv.url, outDir)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDir, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('times out a stalled range on idle time, not on total time', async () => {
+    const {zip, payload} = await bigStoreZip()
+    const trickle = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (end - start + 1 !== CHUNK) return
+        // 64 KiB every 150 ms: a slice takes 1.2 s, beyond the 1 s budget,
+        // but data never stops for longer than 150 ms.
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${buf.length}`,
+          'Content-Length': String(CHUNK)
+        })
+        let off = start
+        const timer = setInterval(() => {
+          const next = Math.min(off + 64 * 1024, end + 1)
+          res.write(buf.subarray(off, next))
+          off = next
+          if (off > end) {
+            clearInterval(timer)
+            res.end()
+          }
+        }, 150)
+        res.on('close', () => clearInterval(timer))
+        return true
+      }
+    })
+    const outTrickle = await newOutDir('out-trickle')
+    try {
+      expect(await tryRangeExtract(trickle.url, outTrickle, fastOptions)).toBe(
+        true
+      )
+      expect(
+        (
+          await fs.promises.readFile(path.join(outTrickle, 'release/test.iso'))
+        ).equals(payload)
+      ).toBe(true)
+    } finally {
+      await trickle.close()
+    }
+
+    const stall = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (end - start + 1 !== CHUNK) return
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${buf.length}`,
+          'Content-Length': String(CHUNK)
+        })
+        res.write(buf.subarray(start, start + 1024))
+        return true
+      }
+    })
+    const outStall = await newOutDir('out-stall')
+    const t0 = Date.now()
+    try {
+      await expect(
+        tryRangeExtract(stall.url, outStall, {
+          ...fastOptions,
+          idleTimeoutMs: 200
+        })
+      ).rejects.toThrow(/No data/)
+      // Three attempts with 200 ms idle time and short backoff.
+      expect(Date.now() - t0).toBeLessThan(5000)
+    } finally {
+      await stall.close()
+    }
+  }, 15000)
+
+  it('stops every request once one slice fails', async () => {
+    const {zip} = await bigStoreZip()
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (end - start + 1 !== CHUNK) return
+        if (start >= 2 * CHUNK) {
+          res.writeHead(403)
+          res.end()
+          return true
+        }
+        // Healthy slices are still in flight when the failing one gives up.
+        setTimeout(() => sendRange(res, buf, start, end), 2500)
+        return true
+      }
+    })
+    const outDir = await newOutDir('out-abort')
+
+    try {
+      await expect(
+        tryRangeExtract(srv.url, outDir, {...fastOptions, concurrency: 4})
+      ).rejects.toThrow(/403/)
+      const settled = srv.requests.length
+      await new Promise(resolve => setTimeout(resolve, 3500))
+      expect(srv.requests.length).toBe(settled)
+    } finally {
+      await srv.close()
+    }
+  }, 15000)
+
+  it('falls back when the probe body breaks', async () => {
+    const {zip} = await bigStoreZip()
+    const srv = await startZipServer(zip, {
+      onRange: (start, end, res, buf) => {
+        if (end !== buf.length - 1) return
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${buf.length}`,
+          'Content-Length': String(end - start + 1)
+        })
+        res.write(buf.subarray(start, start + 100))
+        setTimeout(() => res.destroy(), 50)
+        return true
+      }
+    })
+    const outDir = await newOutDir('out-probe-reset')
+
+    try {
+      expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('refuses a redirect from HTTPS to HTTP', () => {
+    expect(
+      redirectTarget('https://blob.example/a?sig=1', 'http://blob.example/b')
+    ).toBeNull()
+    expect(
+      redirectTarget('https://blob.example/a?sig=1', 'https://cdn.example/b')
+    ).toBe('https://cdn.example/b')
+    expect(redirectTarget('http://blob.example/a', '/b')).toBe(
+      'http://blob.example/b'
+    )
+  })
+
+  it('allows entries when the destination is the filesystem root', () => {
+    expect(resolveSafePath('/', 'artifact.bin')).toBe(
+      path.resolve('/artifact.bin')
+    )
+  })
+
+  it('combines CRC-32 values like zlib over the concatenation', () => {
+    const crc32 = (
+      zlib as unknown as {crc32: (d: Uint8Array, v?: number) => number}
+    ).crc32
+    for (const [a, b] of [
+      [0, 0],
+      [0, 17],
+      [1, 1],
+      [12345, 678901],
+      [CHUNK, CHUNK + 3]
+    ]) {
+      const x = crypto.randomBytes(a)
+      const y = crypto.randomBytes(b)
+      expect(crc32Combine(crc32(x), crc32(y), y.length)).toBe(
+        crc32(Buffer.concat([x, y]))
+      )
+    }
   })
 })
