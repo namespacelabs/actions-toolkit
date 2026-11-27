@@ -159,11 +159,15 @@ function positive(value: number | undefined, fallback: number): number {
 }
 
 // An abort signal that also fires when no data arrives for idleMs. The
-// timer runs only while waiting on the network, so time the consumer
-// spends writing does not count against it.
+// clock runs only while waiting on the network, so time the consumer
+// spends writing does not count against it. touch() and pause() only set
+// fields: one timer re-arms itself about once per idleMs instead of
+// once per chunk.
 class IdleAbort {
   private readonly controller = new AbortController()
-  private timer: ReturnType<typeof setTimeout> | undefined
+  private last = Date.now()
+  private paused = false
+  private timer: ReturnType<typeof setTimeout>
   private readonly onParentAbort = (): void =>
     this.controller.abort(this.parent?.reason)
 
@@ -174,7 +178,18 @@ class IdleAbort {
   ) {
     if (parent?.aborted) this.controller.abort(parent.reason)
     parent?.addEventListener('abort', this.onParentAbort, {once: true})
-    this.touch()
+    this.timer = setTimeout(this.check, idleMs)
+  }
+
+  private readonly check = (): void => {
+    const idle = this.paused ? 0 : Date.now() - this.last
+    if (idle >= this.idleMs) {
+      this.controller.abort(
+        new Error(`No data for ${this.idleMs} ms on ${this.what}`)
+      )
+      return
+    }
+    this.timer = setTimeout(this.check, this.idleMs - idle)
   }
 
   get signal(): AbortSignal {
@@ -182,23 +197,16 @@ class IdleAbort {
   }
 
   touch(): void {
-    this.pause()
-    this.timer = setTimeout(
-      () =>
-        this.controller.abort(
-          new Error(`No data for ${this.idleMs} ms on ${this.what}`)
-        ),
-      this.idleMs
-    )
+    this.last = Date.now()
+    this.paused = false
   }
 
   pause(): void {
-    clearTimeout(this.timer)
-    this.timer = undefined
+    this.paused = true
   }
 
   dispose(): void {
-    this.pause()
+    clearTimeout(this.timer)
     this.parent?.removeEventListener('abort', this.onParentAbort)
   }
 }
