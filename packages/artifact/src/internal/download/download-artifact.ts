@@ -4,6 +4,11 @@ import * as core from '@actions/core'
 import * as httpClient from '@actions/http-client'
 import unzip from 'unzip-stream'
 import {
+  ArtifactIntegrityError,
+  RangeExtractOptions,
+  tryRangeExtract
+} from './range-extract'
+import {
   DownloadArtifactOptions,
   DownloadArtifactResponse
 } from '../shared/interfaces'
@@ -40,13 +45,18 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function streamExtract(url: string, directory: string): Promise<void> {
+export async function streamExtract(
+  url: string,
+  directory: string
+): Promise<void> {
   let retryCount = 0
   while (retryCount < 5) {
     try {
       await streamExtractExternal(url, directory)
       return
     } catch (error) {
+      // The stored bytes are wrong. Another attempt downloads them again.
+      if (error instanceof ArtifactIntegrityError) throw error
       retryCount++
       core.error(
         `Failed to download artifact after ${retryCount} retries due to ${error.message}. Retrying in 5 seconds...`
@@ -61,8 +71,21 @@ async function streamExtract(url: string, directory: string): Promise<void> {
 
 export async function streamExtractExternal(
   url: string,
-  directory: string
+  directory: string,
+  rangeOptions?: RangeExtractOptions
 ): Promise<void> {
+  try {
+    if (await tryRangeExtract(url, directory, rangeOptions)) {
+      return
+    }
+  } catch (error) {
+    // unzip-stream does not check CRC-32, so it would write the same bytes.
+    if (error instanceof ArtifactIntegrityError) throw error
+    core.warning(
+      `Parallel range download failed, downloading as one stream instead: ${error.message}`
+    )
+  }
+
   const client = new httpClient.HttpClient(getUserAgentString())
   const response = await client.get(url)
   if (response.message.statusCode !== 200) {

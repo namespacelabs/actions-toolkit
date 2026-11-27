@@ -53,11 +53,13 @@
     "crypto": "^1.0.1",
     "jwt-decode": "^3.1.2",
     "twirp-ts": "^2.5.0",
-    "unzip-stream": "^0.3.1"
+    "unzip-stream": "^0.3.1",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/archiver": "^5.3.2",
     "@types/unzip-stream": "^0.3.4",
+    "@types/yauzl": "^3.4.0",
     "typedoc": "^0.25.4",
     "typedoc-plugin-markdown": "^3.17.1",
     "typescript": "^5.2.2"
