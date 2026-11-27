@@ -3,6 +3,7 @@ import * as github from '@actions/github'
 import * as core from '@actions/core'
 import * as httpClient from '@actions/http-client'
 import unzip from 'unzip-stream'
+import {tryRangeExtract} from './range-extract'
 import {
   DownloadArtifactOptions,
   DownloadArtifactResponse
@@ -63,6 +64,10 @@ export async function streamExtractExternal(
   url: string,
   directory: string
 ): Promise<void> {
+  if (await tryRangeExtract(url, directory)) {
+    return
+  }
+
   const client = new httpClient.HttpClient(getUserAgentString())
   const response = await client.get(url)
   if (response.message.statusCode !== 200) {
