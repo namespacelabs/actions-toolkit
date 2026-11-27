@@ -326,11 +326,21 @@ export async function tryRangeExtract(
     }
 
     // Validate entries before touching disk
+    let hasLargeStoreEntry = false
     for (const entry of entries) {
       if (entry.isEncrypted() || !entry.canDecodeFileData()) {
         return false
       }
       resolveSafePath(directory, entry.fileName)
+      if (
+        entry.compressionMethod === 0 &&
+        entry.uncompressedSize >= minArchiveSize
+      ) {
+        hasLargeStoreEntry = true
+      }
+    }
+    if (!hasLargeStoreEntry) {
+      return false
     }
 
     core.debug(

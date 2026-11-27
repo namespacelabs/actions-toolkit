@@ -167,42 +167,55 @@ describe('range-extract', () => {
     }
   })
 
-  it('extracts DEFLATE archive and follows 302 redirects', async () => {
-    const payloadA = Buffer.from('omarchy-iso-test-data-'.repeat(100000))
-    const payloadB = Buffer.from('hello world')
-    const zipBuf = await createStreamingArchiverZip(
-      [
-        {name: 'nested/a.txt', content: payloadA},
-        {name: 'b.txt', content: payloadB}
-      ],
-      6
+  it('follows 302 redirects on STORE archives and falls back for DEFLATE-only archives', async () => {
+    const storePayload = Buffer.from('omarchy-redirect-data-'.repeat(20000))
+    const storeZip = await createStreamingArchiverZip(
+      [{name: 'nested/a.bin', content: storePayload}],
+      0
     )
-
-    const srv = await startZipServer(zipBuf, {
+    const redirectSrv = await startZipServer(storeZip, {
       supportRange: true,
       redirectOnce: true
     })
-    const outDir = path.join(testDir, 'out-deflate')
-    await fs.promises.mkdir(outDir, {recursive: true})
+    const outStore = path.join(testDir, 'out-redirect')
+    await fs.promises.mkdir(outStore, {recursive: true})
 
     try {
-      const handled = await tryRangeExtract(srv.url, outDir, {
+      const handled = await tryRangeExtract(redirectSrv.url, outStore, {
         minArchiveSize: 0,
         concurrency: 2
       })
       expect(handled).toBe(true)
       expect(
-        (await fs.promises.readFile(path.join(outDir, 'nested/a.txt'))).equals(
-          payloadA
-        )
-      ).toBe(true)
-      expect(
-        (await fs.promises.readFile(path.join(outDir, 'b.txt'))).equals(
-          payloadB
-        )
+        (
+          await fs.promises.readFile(path.join(outStore, 'nested/a.bin'))
+        ).equals(storePayload)
       ).toBe(true)
     } finally {
-      await srv.close()
+      await redirectSrv.close()
+    }
+
+    const deflatePayload = Buffer.from('omarchy-deflate-data-'.repeat(10000))
+    const deflateZip = await createStreamingArchiverZip(
+      [{name: 'nested/b.txt', content: deflatePayload}],
+      6
+    )
+    const deflateSrv = await startZipServer(deflateZip, {supportRange: true})
+    const outDeflate = path.join(testDir, 'out-deflate')
+    await fs.promises.mkdir(outDeflate, {recursive: true})
+
+    try {
+      expect(
+        await tryRangeExtract(deflateSrv.url, outDeflate, {minArchiveSize: 0})
+      ).toBe(false)
+      await streamExtractExternal(deflateSrv.url, outDeflate)
+      expect(
+        (
+          await fs.promises.readFile(path.join(outDeflate, 'nested/b.txt'))
+        ).equals(deflatePayload)
+      ).toBe(true)
+    } finally {
+      await deflateSrv.close()
     }
   })
 
