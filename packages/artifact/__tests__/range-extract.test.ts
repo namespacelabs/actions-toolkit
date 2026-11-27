@@ -12,7 +12,10 @@ import {
   resolveSafePath,
   tryRangeExtract
 } from '../src/internal/download/range-extract'
-import {streamExtractExternal} from '../src/internal/download/download-artifact'
+import {
+  streamExtract,
+  streamExtractExternal
+} from '../src/internal/download/download-artifact'
 import {noopLogs} from './common'
 
 const testDir = path.join(__dirname, '_temp', 'range-extract')
@@ -710,6 +713,47 @@ describe('range-extract', () => {
       await srv.close()
     }
   })
+
+  it('leaves dot-segment names to the streaming extractor', async () => {
+    // unzip-stream writes notes/.../readme.txt as notes/readme.txt.
+    const zip = rawStoreZip([
+      {name: Buffer.from('notes/.../readme.txt'), data: Buffer.from('hi\n')},
+      {
+        name: Buffer.from('release/test.iso'),
+        data: crypto.randomBytes(2 * CHUNK)
+      }
+    ])
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-dots')
+
+    try {
+      expect(await tryRangeExtract(srv.url, outDir, fastOptions)).toBe(false)
+    } finally {
+      await srv.close()
+    }
+  })
+
+  it('does not retry an archive whose bytes fail its CRC-32', async () => {
+    // Default options, so the archive must exceed the 16 MiB defaults.
+    const zip = rawStoreZip([
+      {
+        name: Buffer.from('release/test.iso'),
+        data: crypto.randomBytes(32 * 1024 * 1024),
+        crc: 0x12345678
+      }
+    ])
+    const srv = await startZipServer(zip)
+    const outDir = await newOutDir('out-no-retry')
+    const t0 = Date.now()
+
+    try {
+      await expect(streamExtract(srv.url, outDir)).rejects.toThrow(/CRC-32/)
+      // No 5 s retry waits.
+      expect(Date.now() - t0).toBeLessThan(4000)
+    } finally {
+      await srv.close()
+    }
+  }, 40000)
 
   it('refuses a redirect from HTTPS to HTTP', () => {
     expect(

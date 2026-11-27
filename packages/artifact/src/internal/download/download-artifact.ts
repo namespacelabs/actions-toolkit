@@ -45,13 +45,18 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function streamExtract(url: string, directory: string): Promise<void> {
+export async function streamExtract(
+  url: string,
+  directory: string
+): Promise<void> {
   let retryCount = 0
   while (retryCount < 5) {
     try {
       await streamExtractExternal(url, directory)
       return
     } catch (error) {
+      // The stored bytes are wrong. Another attempt downloads them again.
+      if (error instanceof ArtifactIntegrityError) throw error
       retryCount++
       core.error(
         `Failed to download artifact after ${retryCount} retries due to ${error.message}. Retrying in 5 seconds...`

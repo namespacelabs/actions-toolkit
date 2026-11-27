@@ -128,13 +128,18 @@ export function crc32Combine(crc1: number, crc2: number, len2: number): number {
   return (multModP(p, crc1) ^ crc2) >>> 0
 }
 
-// True when unzip-stream would decode this entry's name to the same string.
-// It reads names from local headers and maps CP437 differently, so only
-// ASCII or UTF-8-flagged names without a Unicode Path field (0x7075) agree.
+// True when unzip-stream would write this entry to the same path. It maps
+// CP437 differently, so only ASCII or UTF-8-flagged names without a Unicode
+// Path field (0x7075) decode the same. It also rewrites every segment of
+// two or more dots to a single dot.
 function namedLikeStreaming(entry: yauzl.Entry): boolean {
   const utf8 = (entry.generalPurposeBitFlag & 0x800) !== 0
   const ascii = entry.fileNameRaw.every(b => b < 0x80)
-  return (utf8 || ascii) && !entry.extraFields.some(f => f.id === 0x7075)
+  return (
+    (utf8 || ascii) &&
+    !entry.extraFields.some(f => f.id === 0x7075) &&
+    !entry.fileName.split('/').some(segment => /^\.{2,}$/.test(segment))
+  )
 }
 
 function hasProxyEnv(url: string): boolean {
@@ -143,6 +148,9 @@ function hasProxyEnv(url: string): boolean {
     : process.env['HTTP_PROXY'] || process.env['http_proxy']
   return Boolean(proxy && proxy.trim().length > 0)
 }
+
+// Node runs a timer of 2^31 ms or more after 1 ms.
+const MAX_TIMER_MS = 2 ** 31 - 1
 
 function positive(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value >= 1
@@ -201,14 +209,15 @@ class IdleAbort {
 async function fetchRange(
   url: string,
   range: string,
-  signal: AbortSignal
+  idle: IdleAbort
 ): Promise<{res: Response; url: string}> {
   let current = url
   for (let hops = 0; ; hops++) {
+    idle.touch()
     const res = await fetch(current, {
       headers: {Range: range, 'User-Agent': getUserAgentString()},
       redirect: 'manual',
-      signal
+      signal: idle.signal
     })
     if (!REDIRECT_STATUSES.includes(res.status)) return {res, url: current}
     await res.body?.cancel()
@@ -272,7 +281,7 @@ async function* rangeBody(
   const range = `bytes=${start}-${end - 1}`
   const idle = new IdleAbort(idleTimeoutMs, `range ${range}`, signal)
   try {
-    const {res} = await fetchRange(obj.url, range, idle.signal)
+    const {res} = await fetchRange(obj.url, range, idle)
     const header = res.headers.get('content-range')
     const cr = parseContentRange(header)
     if (
@@ -313,14 +322,31 @@ class HttpRangeReader extends yauzl.RandomAccessReader {
         this.tail.subarray(start - this.tailStart, end - this.tailStart)
       ])
     }
-    // Destroying the stream must cancel a request that is still waiting.
+    // Readable.from would wait for a pending read before cleaning up, so
+    // destroying the stream aborts the request first.
     const stop = new AbortController()
-    const stream = Readable.from(
-      rangeBody(this.obj, start, end, this.idleTimeoutMs, stop.signal),
-      {objectMode: false}
+    const body = rangeBody(
+      this.obj,
+      start,
+      end,
+      this.idleTimeoutMs,
+      stop.signal
     )
-    stream.once('close', () => stop.abort(new Error('Range stream closed')))
-    return stream
+    return new Readable({
+      read() {
+        body.next().then(
+          ({done, value}) => this.push(done ? null : value),
+          err => this.destroy(err)
+        )
+      },
+      destroy(err, callback) {
+        stop.abort(err ?? new Error('Range stream closed'))
+        body.return(undefined).then(
+          () => callback(err),
+          () => callback(err)
+        )
+      }
+    })
   }
 }
 
@@ -498,7 +524,7 @@ async function probeTail(
     const {res, url: finalUrl} = await fetchRange(
       url,
       `bytes=-${TAIL_PROBE_BYTES}`,
-      idle.signal
+      idle
     )
     const cr = parseContentRange(res.headers.get('content-range'))
     const want = cr ? cr.end - cr.start + 1 : 0
@@ -549,12 +575,15 @@ export async function tryRangeExtract(
     64 * 1024,
     positive(options.writeBufferSize, DEFAULT_WRITE_BUFFER_SIZE)
   )
-  const minArchiveSize = Math.max(
-    0,
-    options.minArchiveSize ?? DEFAULT_MIN_ARCHIVE_SIZE
-  )
+  const minArchiveSize =
+    options.minArchiveSize === 0
+      ? 0
+      : positive(options.minArchiveSize, DEFAULT_MIN_ARCHIVE_SIZE)
   const maxEntries = positive(options.maxEntries, DEFAULT_MAX_ENTRIES)
-  const idleTimeoutMs = positive(options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS)
+  const idleTimeoutMs = Math.min(
+    MAX_TIMER_MS,
+    positive(options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS)
+  )
   const isLargeStore = (entry: yauzl.Entry): boolean =>
     entry.compressionMethod === 0 && entry.uncompressedSize >= minArchiveSize
 
